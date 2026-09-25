@@ -1,0 +1,38 @@
+README.md
+  s_783cfdcb1f2d94::t_adc5164d7b9aa0 511-514
+  s_783cfdcb1f2d94::t_e641bd2f59c283 530-534
+  s_783cfdcb1f2d94::t_ffe9febb2a4d9c 504-510,515-529,535-539
+reports/PI05_FULL_FINETUNE_20260925.md
+  s_783cfdcb1f2d94::t_8fb0da218c6431 18,100-101
+  s_783cfdcb1f2d94::t_ffe9febb2a4d9c 1-17,19-80
+  s_783cfdcb1f2d94::t_e641bd2f59c283 81-99
+tools/build_pi05_notebook.py
+  s_783cfdcb1f2d94::t_adc5164d7b9aa0 28-31,75-77,100-107,146,281,323,339-344
+  s_783cfdcb1f2d94::t_7da96d99feb234 84-88,174-182,292-297,318,321-322,345-350,359-364,392-398,402,428-430
+  s_783cfdcb1f2d94::t_063653566f1995 151
+tools/train_pi05_full.py
+  s_783cfdcb1f2d94::t_adc5164d7b9aa0 12,18-49,112-121,205-212,217-227,233-243
+notebooks/pi05_ik_three_block_full_finetune.ipynb
+  s_783cfdcb1f2d94::t_4c92b59ce945c3 14
+  s_783cfdcb1f2d94::t_2c03f9efe04060 6,28,42,62,70,76,84,98,104
+tests/test_pi05_workflow.py
+  s_783cfdcb1f2d94::t_e641bd2f59c283 11-12,45-80
+tools/evaluate_pi05.py
+  s_783cfdcb1f2d94::t_7da96d99feb234 198-209,221-225,281,283-291,309-316,318-319
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "98ffc2a9db2272ac39ad87354a98acd2df6b59ac",
+  "prompts": {},
+  "sessions": {
+    "s_783cfdcb1f2d94": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0d897-968e-7cd1-b328-d34bb587f974",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    }
+  }
+}
