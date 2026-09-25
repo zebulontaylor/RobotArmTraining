@@ -1,0 +1,38 @@
+tests/test_pi05_checkpoint_backup.py
+  s_783cfdcb1f2d94::t_2ef1b953ee2173 1-76
+reports/PI05_FULL_FINETUNE_20260925.md
+  s_783cfdcb1f2d94::t_ca76e1979517a7 102-126
+  s_783cfdcb1f2d94::t_4456a624f7d18f 18
+tests/test_pi05_workflow.py
+  s_783cfdcb1f2d94::t_5d4a4ee408ef7c 17-37
+tools/train_pi05_full.py
+  s_783cfdcb1f2d94::t_2d9b60fb7ad0ba 13-15,239-243
+tools/bundle_pi05_runtime.py
+  s_783cfdcb1f2d94::t_5d4a4ee408ef7c 6-8,14-38,49,67
+  s_783cfdcb1f2d94::t_2d9b60fb7ad0ba 48
+tools/pi05_checkpoint_backup.py
+  s_783cfdcb1f2d94::t_2d9b60fb7ad0ba 1-137
+README.md
+  s_783cfdcb1f2d94::t_ca76e1979517a7 535-541
+tools/build_pi05_notebook.py
+  s_783cfdcb1f2d94::t_ad9aeef645df0e 61-63,96-101,108-121,123-126,176-179,352,371-379,394-404,527-529
+  s_783cfdcb1f2d94::t_2ef1b953ee2173 122
+notebooks/pi05_ik_three_block_full_finetune.ipynb
+  s_783cfdcb1f2d94::t_7a75c2515a27a9 14,20,28,70,76,84,126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f1e7e1b852ddfeaba1cb1898cad102b1a1817060",
+  "prompts": {},
+  "sessions": {
+    "s_783cfdcb1f2d94": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0d897-968e-7cd1-b328-d34bb587f974",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    }
+  }
+}
