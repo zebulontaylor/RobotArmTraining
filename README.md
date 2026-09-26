@@ -503,6 +503,23 @@ teleop/   keyboard.py  episode.py  replay.py  grid_replay.py
 data/     episode_NNN/{data.npz, meta.json, sim.mp4}
 ```
 
+## Full-model VLA-Adapter on the IK three-block task
+
+[`notebooks/robot_arm_learning_finetune_colab.ipynb`](notebooks/robot_arm_learning_finetune_colab.ipynb)
+uses the same 1,000-demo scripted IK three-block dataset as the pi0.5 notebook,
+at its native **30 Hz**. It downloads a pinned Parquet export and converts the
+embedded shoulder/wrist JPEGs directly to RLDS; no MuJoCo rendering is required.
+Actions stay as six absolute next-step joint targets in radians plus gripper
+opening in metres, with no additional time shift. Proprio adds a zero padding
+element before the gripper to fit VLA-Adapter's 8-D input. Whole episodes are
+held out for validation, and normalization uses training episodes only.
+
+Start a fresh run for this dataset. The notebook rejects resuming teleop/EEF
+runs and uses separate dataset caches and checkpoint directories. These joint
+control checkpoints are incompatible with the legacy EEF-based `rollout.py`.
+Use an A100-class GPU and at least 100 GiB free runtime disk for conversion,
+training dependencies, and the model, plus persistent checkpoint storage.
+
 ## Full-model pi0.5 on the IK three-block task
 
 Open [`notebooks/pi05_ik_three_block_full_finetune.ipynb`](notebooks/pi05_ik_three_block_full_finetune.ipynb)

@@ -31,7 +31,7 @@ def patched_trainer(tmp_path):
     paths = ["vla-scripts/finetune.py", "prismatic/models/backbones/llm/base_llm.py",
              "prismatic/vla/datasets/rlds/dataset.py",
              *[f"prismatic/vla/datasets/rlds/oxe/{name}.py"
-               for name in ("configs", "mixtures", "transforms")]]
+               for name in ("configs", "mixtures", "transforms", "materialize")]]
     for path in paths:
         result = subprocess.run(
             ["git", "-C", str(checkout), "show", f"{settings['VLA_COMMIT']}:{path}"],
@@ -66,7 +66,76 @@ def test_notebook_code_and_training_command():
     command = settings["command"]
     assert command[command.index("--use_lora") + 1] == "False"
     assert command[command.index("--use_fz") + 1] == "True"
+    assert command[command.index("--dataset_name") + 1] == "panthera_ik_three_block"
+    assert command[command.index("--balance_z_loss") + 1] == "False"
+    assert settings["SAMPLE_HZ"] == 30
+    assert settings["DATASET_REPO"] == "FoxNerdSaysMoo/panthera-ik-three-block-stack-30hz"
     assert "--lora_rank" not in command
+
+
+def test_embedded_converter_matches_source():
+    assignment = next(node for node in ast.parse(source(11)).body
+                      if isinstance(node, ast.Assign) and node.targets[0].id == "IK_BUILDER_SOURCE")
+    assert ast.literal_eval(assignment.value) == (ROOT / "teleop/build_panthera_ik_rlds.py").read_text()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("dataset_repo", "FoxNerdSaysMoo/robot-arm-learning-data"),
+    ("sample_hz", 10),
+    ("action_contract", "relative_end_effector"),
+])
+def test_resume_rejects_changed_dataset_timing_or_actions(tmp_path, key, value):
+    namespace = {"Path": Path, "json": json, "OUTPUT_ROOT": tmp_path,
+                 "RUN_ID": "test", "RESUME_DIR": None}
+    exec(source(1), namespace)
+    nodes = ast.parse(source(17)).body
+    start = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Assign)
+                 and node.targets[0].id == "validation_config")
+    contract_nodes = nodes[start:start + 3]  # Config, path, and save/compare branch.
+    execute_nodes(contract_nodes, namespace)
+    namespace["RESUME_DIR"] = tmp_path / "test"
+    execute_nodes(contract_nodes, namespace)  # Identical contract can resume.
+    path = namespace["validation_config_path"]
+    saved = json.loads(path.read_text())
+    saved[key] = value
+    path.write_text(json.dumps(saved))
+    with pytest.raises(RuntimeError, match="Dataset/action contract"):
+        execute_nodes(contract_nodes, namespace)
+
+
+def test_ik_materialization_preserves_absolute_joint_contract(patched_trainer, tmp_path):
+    from copy import deepcopy
+    from enum import IntEnum
+    from typing import Any, Dict, Tuple
+
+    oxe = tmp_path / "prismatic/vla/datasets/rlds/oxe"
+    config = ast.parse((oxe / "configs.py").read_text())
+    namespace = dict(IntEnum=IntEnum)
+    execute_nodes([node for node in config.body if isinstance(node, ast.ClassDef)], namespace)
+    assignment = next(node for node in config.body if isinstance(node, ast.Assign)
+                      and node.targets[0].id == "OXE_DATASET_CONFIGS")
+    # Other datasets' configs reference unrelated imports; extract our entry only.
+    index = next(i for i, key in enumerate(assignment.value.keys)
+                 if key.value == "panthera_ik_three_block")
+    our_config = eval(compile(ast.Expression(assignment.value.values[index]), "config", "eval"), namespace)
+    namespace.update(deepcopy=deepcopy, Path=Path, Tuple=Tuple, Dict=Dict, Any=Any,
+                     ACTION_PROPRIO_NORMALIZATION_TYPE="bounds_q99",
+                     OXE_DATASET_CONFIGS={"panthera_ik_three_block": our_config},
+                     OXE_STANDARDIZATION_TRANSFORMS={"panthera_ik_three_block": lambda x: x})
+    function = next(node for node in ast.parse((oxe / "materialize.py").read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "make_oxe_dataset_kwargs")
+    execute_nodes([function], namespace)
+    kwargs = namespace["make_oxe_dataset_kwargs"](
+        "panthera_ik_three_block", tmp_path, load_camera_views=("primary", "wrist"))
+    assert kwargs["absolute_action_mask"] == [True] * 7
+    assert kwargs["action_normalization_mask"] == [True] * 7
+    assert kwargs["image_obs_keys"] == {"primary": "image", "wrist": "wrist_image"}
+    assert kwargs["state_obs_keys"] == ["state"]
+    assert our_config["state_encoding"] == namespace["StateEncoding"].JOINT
+    assert our_config["action_encoding"] == namespace["ActionEncoding"].JOINT_POS
+    dataset = (oxe.parent / "dataset.py").read_text()
+    assert 'name == "panthera_ik_three_block" and "val" in builder.info.splits' in dataset
+    assert "delta_scale" not in dataset
 
 
 def test_all_backbones_unfreeze_and_full_checkpoint_roundtrip(patched_trainer, tmp_path):
