@@ -1,6 +1,6 @@
 <mujoco model="panthera_ht">
   <compiler angle="radian" meshdir="." autolimits="true" />
-  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10" />
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="100" />
   <default>
     <joint damping="0.2" armature="0.05" frictionloss="0.1" />
     <general biastype="affine" />

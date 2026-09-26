@@ -41,15 +41,17 @@ import pathlib
 import mujoco
 import numpy as np
 
+try:  # Also imported as panthera_env by standalone teleop scripts.
+    from .dynamics import CONTACT_DYNAMICS, LEGACY_DYNAMICS, DYNAMICS_MODES
+except ImportError:
+    from dynamics import CONTACT_DYNAMICS, LEGACY_DYNAMICS, DYNAMICS_MODES
+
 HERE = pathlib.Path(__file__).parent
 DEFAULT_SCENE = HERE / "panthera" / "scene.xml"
 
 ARM_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 GRIPPER_OPEN = 0.04          # metres, per finger
-# A real rubber pad conforms to a cube face and creates a much larger contact
-# patch than MuJoCo's rigid box contact. Emulate that only after both pads touch
-# a reasonably face-aligned cube; corner grasps remain ordinary frictional
-# contacts and can slide. These are command-space hysteresis thresholds.
+# Legacy weld-v1 command-space hysteresis, retained for historical replay only.
 GRASP_LOCK = 0.25
 GRASP_UNLOCK = 0.70
 GRASP_ALIGN_COS = float(np.cos(np.deg2rad(25.0)))
@@ -66,9 +68,14 @@ _OBJECT_MIN_SEP = 0.09
 
 
 class PantheraSim:
-    def __init__(self, scene: pathlib.Path = DEFAULT_SCENE, ee_site: str = "grip_site"):
+    def __init__(self, scene: pathlib.Path = DEFAULT_SCENE, ee_site: str = "grip_site",
+                 *, dynamics: str = CONTACT_DYNAMICS):
+        if dynamics not in DYNAMICS_MODES:
+            raise ValueError(f"Unknown simulation dynamics: {dynamics!r}")
+        self.dynamics = dynamics
         self.scene_path = pathlib.Path(scene)
         self.model = mujoco.MjModel.from_xml_path(str(scene))
+        self.model.opt.impratio = 100 if dynamics == CONTACT_DYNAMICS else 10
         self.data = mujoco.MjData(self.model)
         self.ee_site = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, ee_site)
@@ -128,6 +135,8 @@ class PantheraSim:
         self._ik_data = mujoco.MjData(self.model)
         self._jacp = np.zeros((3, self.model.nv))
         self._jacr = np.zeros((3, self.model.nv))
+        self._grasp_contact_time = np.zeros(len(self.object_names))
+        self._grasp_flags = np.zeros(len(self.object_names), dtype=bool)
         self.reset()
         # Posture the nullspace bias pulls toward. The home keyframe rather
         # than the midpoint of each range: joints 2 and 3 are one-sided, so
@@ -157,6 +166,7 @@ class PantheraSim:
         for adr in self.object_dofadr:
             self.data.qvel[adr:adr + 6] = 0.0
         self._release_grasps()
+        self.sync_control_state()
         mujoco.mj_forward(self.model, self.data)
 
     def _scatter_objects(self, rng) -> None:
@@ -397,8 +407,53 @@ class PantheraSim:
         return q_out, perr, rerr
 
     # ---------- actuation ----------
-    def set_arm_ctrl(self, q: np.ndarray) -> None:
+    def set_arm_ctrl(self, q: np.ndarray, *, immediate: bool = False) -> None:
+        """Set an interval endpoint; step(n) interpolates at physics rate.
+
+        immediate is for initialization after explicitly restoring qpos.
+        Outside step(), data.ctrl holds the endpoint for action logging.
+        """
         self.data.ctrl[:6] = np.clip(q, self.arm_range[:, 0], self.arm_range[:, 1])
+        if immediate:
+            self._applied_arm_ctrl = self.data.ctrl[:6].copy()
+
+    def sync_control_state(self) -> None:
+        """Call after restoring qpos/ctrl from a recording or reset snapshot."""
+        self._applied_arm_ctrl = self.data.ctrl[:6].copy()
+        self._grasp_contact_time[:] = 0
+        self._grasp_flags[:] = False
+
+    def pad_normal_forces(self) -> np.ndarray:
+        """Per-object left/right compressive loads in newtons; read-only."""
+        forces = np.zeros((len(self.object_names), 2))
+        indices = {name: i for i, name in enumerate(self.object_names)}
+        wrench = np.zeros(6)
+        for cindex in range(self.data.ncon):
+            contact = self.data.contact[cindex]
+            if contact.efc_address < 0:
+                continue
+            for cube, pad in ((contact.geom1, contact.geom2),
+                              (contact.geom2, contact.geom1)):
+                name = self._cube_geoms.get(cube)
+                if name is not None and pad in (self._pad_L, self._pad_R):
+                    mujoco.mj_contactForce(self.model, self.data, cindex, wrench)
+                    forces[indices[name], int(pad == self._pad_R)] += max(0., wrench[0])
+        return forces
+
+    def grasp_flags(self) -> np.ndarray:
+        """Loaded bilateral contact for 20 ms; legacy mode exposes its latch.
+
+        Physical flags require >0.01 N on both pads. Contact loss clears them
+        immediately, even at partial opening. Lift/success needs the caller's
+        sustained elevation/placement check. Flags never apply object forces.
+        """
+        if self.dynamics == LEGACY_DYNAMICS:
+            return np.array([e >= 0 and bool(self.data.eq_active[e]) for e in self._grasp_eq], dtype=bool)
+        return self._grasp_flags.copy()
+
+    @property
+    def grasped(self) -> bool:
+        return bool(self.grasp_flags().any())
 
     def set_gripper(self, opening: float) -> None:
         """`opening` in [0, 1]: 0 closed, 1 fully open."""
@@ -466,9 +521,28 @@ class PantheraSim:
                 self.data.eq_active[eid] = True
 
     def step(self, n: int = 1) -> None:
-        for _ in range(n):
-            self._update_grasp()
+        if n < 0 or int(n) != n:
+            raise ValueError("Physics step count must be a nonnegative integer")
+        if not n:
+            return  # Preserve pending targets and the last applied command.
+        n = int(n)
+        target = self.data.ctrl[:6].copy()
+        start = self._applied_arm_ctrl.copy()
+        physical = self.dynamics == CONTACT_DYNAMICS
+        if physical:
+            self._release_grasps()
+        for j in range(1, n + 1):
+            if physical:
+                self.data.ctrl[:6] = start + (target - start) * (j / n)
+            else:
+                self._update_grasp()
             mujoco.mj_step(self.model, self.data)
+            if physical:
+                loaded = np.all(self.pad_normal_forces() > .01, axis=1)
+                self._grasp_contact_time = np.where(loaded, self._grasp_contact_time + self.dt, 0.)
+                self._grasp_flags = self._grasp_contact_time >= .020 - 1e-12
+        self.data.ctrl[:6] = target
+        self._applied_arm_ctrl = target
 
     @property
     def dt(self) -> float:

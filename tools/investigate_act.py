@@ -184,6 +184,7 @@ def rollout(output, checkpoints, episodes, modes, seed, demo=False):
                         env.sim.data.qvel[env.sim.arm_dofadr] = raw["dq"][0]
                         env.sim.data.qpos[env.sim.finger_qadr] = data["finger_q"][0]
                         env.sim.data.ctrl[:] = data["ctrl"][0]
+                        env.sim.sync_control_state()
                         env.sim.set_object_poses(data["obj_pos"][0], data["obj_quat"][0])
                         mujoco.mj_forward(env.sim.model, env.sim.data)
                     policy.reset()
@@ -214,7 +215,7 @@ def rollout(output, checkpoints, episodes, modes, seed, demo=False):
                             env.step(action)
                             sim = env.sim
                             pos, _ = sim.object_poses()
-                            flags = np.array([e >= 0 and bool(sim.data.eq_active[e]) for e in sim._grasp_eq])
+                            flags = sim.grasp_flags()
                             metrics = stack_metrics(pos)
                             held_stable = np.where(flags & (pos[:, 2] > .0975), held_stable+1, 0)
                             stable = stable+1 if metrics["three_stack"] and not flags.any() else 0

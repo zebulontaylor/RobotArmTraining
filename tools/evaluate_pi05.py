@@ -108,7 +108,7 @@ def reset_scene(sim, seed, distribution):
     sim.data.qpos[sim.arm_qadr] = q
     sim.data.qvel[:] = 0
     sim.data.qpos[sim.finger_qadr] = [.04, -.04]
-    sim.set_arm_ctrl(q)
+    sim.set_arm_ctrl(q, immediate=True)
     sim.set_gripper(1.)
     mujoco.mj_forward(sim.model, sim.data)
 
@@ -122,7 +122,7 @@ def run_episode(sim, renderers, cameras, select_action, *, seed, distribution, s
     started = time.monotonic()
     path = output / f"{distribution}_seed_{seed}"
     writer = None
-    trace = {k: [] for k in ("qpos", "qvel", "ctrl", "eq_active", "sim_time", "action")}
+    trace = {k: [] for k in ("qpos", "qvel", "ctrl", "eq_active", "grasp_flags", "sim_time", "action")}
     record = {"seed": seed, "distribution": distribution, "error": None, "video": None}
     clipped = 0
     queries = []
@@ -153,12 +153,12 @@ def run_episode(sim, renderers, cameras, select_action, *, seed, distribution, s
             sim.set_gripper(float(bounded[6] / .04))
             sim.step(clock.next_steps())
             positions, _ = sim.object_poses()
-            holding = [eid >= 0 and bool(sim.data.eq_active[eid]) for eid in sim._grasp_eq]
+            holding = sim.grasp_flags()
             score.update(positions, holding, step)
             steps = step + 1
             if save_trace:
                 for key, value in {"qpos": sim.data.qpos, "qvel": sim.data.qvel, "ctrl": sim.data.ctrl,
-                                   "eq_active": sim.data.eq_active, "sim_time": sim.data.time, "action": action}.items():
+                                   "eq_active": sim.data.eq_active, "grasp_flags": holding, "sim_time": sim.data.time, "action": action}.items():
                     trace[key].append(np.asarray(value).copy())
             if writer:
                 frame = np.concatenate(images, axis=1)
@@ -212,6 +212,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--episodes", type=int, default=50, help="Episodes per selected distribution")
+    parser.add_argument("--dynamics", choices=("contact-v2", "weld-v1"), default="contact-v2")
     parser.add_argument("--seconds", type=float, default=60.)
     parser.add_argument("--seed", type=int, default=260925000)
     parser.add_argument("--distribution", choices=["matched", "broad", "both"], default="both")
@@ -249,7 +250,7 @@ def main():
     check_full_model(policy)
     preprocessor, postprocessor = make_pre_post_processors(policy.config, pretrained_path=str(checkpoint),
         preprocessor_overrides={"device_processor": {"device": "cuda"}})
-    sim = PantheraSim()
+    sim = PantheraSim(dynamics=args.dynamics)
     if sim.object_names != ["cube_red", "cube_green", "cube_blue"]:
         raise ValueError("Wrong simulator object order")
     renderers = [mujoco.Renderer(sim.model, height=256, width=256) for _ in range(2)]
@@ -276,7 +277,8 @@ def main():
     settings = {**vars(args), "checkpoint": str(checkpoint), "output": str(args.output.resolve()),
                 "fps": FPS, "success_hold_seconds": 1.0, "color_order": "green, red, blue",
                 "max_horizontal_error_m": .012, "headless_simulation": True,
-                "grasp_assist": "unchanged contact-triggered compliant-pad welds from training scene",
+                "simulation_dynamics": sim.dynamics,
+                "training_simulation_dynamics": contract.get("simulation_dynamics", "weld-v1"),
                 "matched_starts": "collector start region, fresh seeds, no planner-success filtering"}
     wandb_run = None
     try:

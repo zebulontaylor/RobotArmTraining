@@ -290,6 +290,8 @@ def main() -> None:
         deployment = {"version": 2, "fps": metadata.fps, "dataset": str(args.dataset.resolve()),
                       "dataset_signature": _dataset_signature(args.dataset),
                       "state_gripper": "command", "max_joint_step": None}
+        from sim.dynamics import provenance_dynamics
+        deployment["simulation_dynamics"] = provenance_dynamics(provenance)
         from tools.act_scene import fixed_environment
         environment = fixed_environment(provenance)
         if environment is not None:

@@ -13,6 +13,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sim.panthera_env import PantheraSim
+from sim.dynamics import recorded_dynamics
 from sim.stack_task import stack_metrics
 from teleop.dataset_contract import DEFAULT_RENDERED, PhysicsClock
 
@@ -21,12 +22,14 @@ def replay(path: Path, max_joint_step: float | None = None) -> dict:
     data = np.load(path / 'trajectory.npz')
     source = json.loads((path / 'source.json').read_text())
     raw = np.load(Path(source['source']) / 'data.npz')
-    sim = PantheraSim()
+    meta = json.loads((Path(source['source']) / 'meta.json').read_text())
+    sim = PantheraSim(ROOT / meta.get('scene', 'sim/panthera/scene.xml'), dynamics=recorded_dynamics(meta))
     sim.reset(randomize=False)
     sim.data.qpos[sim.arm_qadr] = data['q'][0]
     sim.data.qvel[sim.arm_dofadr] = raw['dq'][0]
     sim.data.qpos[sim.finger_qadr] = data['finger_q'][0]
     sim.data.ctrl[:] = data['ctrl'][0]
+    sim.sync_control_state()
     sim.set_object_poses(data['obj_pos'][0], data['obj_quat'][0])
     mujoco.mj_forward(sim.model, sim.data)
     clock = PhysicsClock(float(data['sample_hz']), sim.dt)
@@ -42,7 +45,7 @@ def replay(path: Path, max_joint_step: float | None = None) -> dict:
         sim.set_gripper(float(action[6]) / .04)
         sim.step(clock.next_steps())
         errors.append(np.abs(sim.q - data['q'][index]).max())
-        grasped |= any(eid >= 0 and sim.data.eq_active[eid] for eid in sim._grasp_eq)
+        grasped |= sim.grasped
         lifted |= bool(stack_metrics(sim.object_poses()[0])['lifted_cubes'])
     metrics = stack_metrics(sim.object_poses()[0])
     return {'episode': path.name, 'max_joint_step': max_joint_step,

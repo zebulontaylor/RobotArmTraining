@@ -14,6 +14,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sim.panthera_env import PantheraSim
+from sim.dynamics import recorded_dynamics
 from sim.stack_task import stack_metrics, ordered_two_stack_metrics
 from teleop.render_vla_dataset import recording_times, interpolate
 from teleop.dataset_contract import PhysicsClock
@@ -21,7 +22,8 @@ from teleop.dataset_contract import PhysicsClock
 
 def replay(path: Path) -> dict:
     meta = json.loads((path / 'meta.json').read_text())
-    sim = PantheraSim(ROOT / meta.get('scene', 'sim/panthera/scene.xml'))
+    sim = PantheraSim(ROOT / meta.get('scene', 'sim/panthera/scene.xml'),
+                      dynamics=recorded_dynamics(meta))
     two_blocks = len(sim.object_names) == 2
     sim.reset(randomize=False)
     with np.load(path / 'data.npz') as data:
@@ -34,6 +36,7 @@ def replay(path: Path) -> dict:
         sim.data.qvel[sim.finger_dofadr] = data['finger_dq'][0]
         sim.set_object_poses(data['obj_pos'][0], data['obj_quat'][0])
         sim.data.ctrl[:] = controls[0]
+        sim.sync_control_state()
         mujoco.mj_forward(sim.model, sim.data)
     clock = PhysicsClock(30, sim.dt)
     stable = 0
@@ -42,14 +45,14 @@ def replay(path: Path) -> dict:
         sim.set_arm_ctrl(action[:6])
         sim.set_gripper(action[6] / .04)
         sim.step(clock.next_steps())
-        grasped.update(i for i, eid in enumerate(sim._grasp_eq) if sim.data.eq_active[eid])
-        released = not any(sim.data.eq_active[eid] for eid in sim._grasp_eq)
+        grasped.update(np.flatnonzero(sim.grasp_flags()).tolist())
+        released = not sim.grasped
         positions = sim.object_poses()[0]
         valid_stack = (ordered_two_stack_metrics(positions)['two_stack'] if two_blocks
                        else stack_metrics(positions)['three_stack'])
         success = valid_stack and released
         stable = stable + 1 if success else 0
-    return dict(episode=path.name, success=stable >= 30, stable_final_steps=stable,
+    return dict(episode=path.name, simulation_dynamics=sim.dynamics, success=stable >= 30, stable_final_steps=stable,
                 grasped_blocks=sorted(grasped), final_positions=sim.object_poses()[0].tolist())
 
 

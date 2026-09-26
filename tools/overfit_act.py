@@ -133,7 +133,7 @@ def rollout(raw_path, trajectory, policy=None, pre=None, post=None, video=None, 
             sim.set_gripper(float(np.clip(action[6]/.04,0,1)))
             sim.step(clock.next_steps())
             positions=sim.object_poses()[0]
-            flags=np.array([e>=0 and bool(sim.data.eq_active[e]) for e in sim._grasp_eq])
+            flags=sim.grasp_flags()
             metrics=stack_metrics(positions)
             stable=stable+1 if metrics['three_stack'] and not flags.any() else 0
             result['grasped'] |= bool(flags.any())

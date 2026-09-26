@@ -158,7 +158,7 @@ class PantheraStackEnv:
         self.reset()
 
     def _grasped(self) -> bool:
-        return any(eid >= 0 and self.sim.data.eq_active[eid] for eid in self.sim._grasp_eq)
+        return self.sim.grasped
 
     def reset(self, seed: int | None = None, demo_probability: float | None = None) -> None:
         if seed is not None:
@@ -183,6 +183,7 @@ class PantheraStackEnv:
             )
             for address in self.sim.object_dofadr:
                 self.sim.data.qvel[address:address + 6] = 0.0
+            self.sim.sync_control_state()
             self.mujoco.mj_forward(self.sim.model, self.sim.data)
         else:
             self.sim.reset(randomize=True, rng=self.rng)
@@ -227,9 +228,7 @@ class PantheraStackEnv:
         pairs = np.concatenate(
             [(positions[j] - positions[i]) / 0.15 for i, j in ((0, 1), (0, 2), (1, 2))]
         )
-        grasp_flags = np.array([
-            float(eid >= 0 and self.sim.data.eq_active[eid]) for eid in self.sim._grasp_eq
-        ])
+        grasp_flags = self.sim.grasp_flags().astype(float)
         return np.concatenate([
             q_scaled,
             dq_scaled,
@@ -913,6 +912,11 @@ def main() -> None:
     args.deployment = json.loads(contract_path.read_text()) if contract_path.is_file() else {"version": 1, "fps": args.hz}
     if args.max_joint_step is None:
         args.max_joint_step = args.deployment.get("max_joint_step")
+    from sim.dynamics import CONTACT_DYNAMICS, recorded_dynamics
+    if args.resume and recorded_dynamics(args.deployment) != CONTACT_DYNAMICS:
+        parser.error("Cannot resume RL optimizer state across physics versions; use --checkpoint for a fresh run")
+    args.deployment.setdefault("training_simulation_dynamics", recorded_dynamics(args.deployment))
+    args.deployment["simulation_dynamics"] = CONTACT_DYNAMICS
     args.deployment["max_joint_step"] = args.max_joint_step
     normalizer = ObservationNormalizer(metadata.stats, device)
 

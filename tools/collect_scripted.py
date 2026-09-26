@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 import mujoco
 import numpy as np
 from sim.panthera_env import PantheraSim, mat_to_quat
+from sim.dynamics import CONTACT_DYNAMICS
 from sim.stack_task import stack_metrics, ordered_two_stack_metrics, CUBE_EDGE
 from teleop.dataset_contract import PhysicsClock, file_hash
 from teleop.episode import Episode
@@ -129,7 +130,7 @@ class Planner:
         sim.data.qpos[sim.arm_qadr] = q
         sim.data.qvel[:] = 0
         sim.data.qpos[sim.finger_qadr] = [.04,-.04]
-        sim.set_arm_ctrl(q); sim.set_gripper(1)
+        sim.set_arm_ctrl(q, immediate=True); sim.set_gripper(1)
         mujoco.mj_forward(sim.model, sim.data)
         self.target, self.quat, self.qctrl = sim.ee_pos(), sim.ee_quat(), q
         self.hold('settle', .3)
@@ -149,7 +150,7 @@ class Planner:
             self.move(f'{level}_approach', above, quat, 1.)
             self.move(f'{level}_descend', grasp)
             self.hold(f'{level}_close', .5, 0.)
-            if not sim.data.eq_active[sim._grasp_eq[block]]:
+            if not sim.grasp_flags()[block]:
                 raise DemoFailure(f'{level}: no bilateral grasp')
             self.move(f'{level}_lift', above)
             if sim.object_poses()[0][block,2] < obj[2]+.04:
@@ -170,7 +171,7 @@ class Planner:
             self.tick(self.target, self.quat, 1.)
             metrics = (ordered_two_stack_metrics(sim.object_poses()[0]) if self.blocks == 2
                        else stack_metrics(sim.object_poses()[0]))
-            if not metrics['two_stack' if self.blocks == 2 else 'three_stack'] or any(sim.data.eq_active[e] for e in sim._grasp_eq):
+            if not metrics['two_stack' if self.blocks == 2 else 'three_stack'] or sim.grasped:
                 raise DemoFailure('released stack did not remain stable for one second')
             p = sim.object_poses()[0][[1,0] if self.blocks == 2 else [1,0,2]]
             if np.max(np.linalg.norm(np.diff(p[:,:2],axis=0),axis=1)) > .012:
@@ -205,7 +206,7 @@ def main():
         parser.error('episodes, workers and max-attempts must be positive')
     args.output.mkdir(parents=True, exist_ok=True)
     signature = file_hash(Path(__file__))
-    contract = dict(generator_sha256=signature, seed=args.seed, control_hz=30,
+    contract = dict(simulation_dynamics=CONTACT_DYNAMICS, generator_sha256=signature, seed=args.seed, control_hz=30,
         blocks=args.blocks, arm_start=args.arm_start,
         task_metrics_sha256=file_hash(ROOT/"sim/stack_task.py"),
         scene_sha256={p.name:file_hash(p) for p in sorted((ROOT/'sim/panthera').glob('*.xml'))},

@@ -191,7 +191,7 @@ Joint angles and the target pose are saved in each episode's metadata.
 Block positions/yaws, movement speed and clearance vary. Each demonstration
 stacks red onto green once, releases, retreats, and holds a valid stack for one
 second. Green must remain on the table and horizontal misalignment must be at
-most 12 mm. Collection uses the existing contact-based grasp assistance.
+most 12 mm. Collection uses physical pad contacts and interpolated arm commands.
 The compact dataset contains 30 Hz state/action/object arrays; camera images
 can be rendered later. Replay, the renderer, grid preview and scripted exporter
 read the scene from episode metadata. With sufficient disk space, export using:
@@ -242,7 +242,7 @@ positions/yaws, arm starts, speeds (0.10–0.16 m/s), and approach clearances
 does not establish performance over the entire teleop start distribution.
 Only demos with both physical grasps/lifts and a released three-stack held for
 one second with at most 12 mm adjacent horizontal misalignment are saved.
-Physics and contact-based grasp assistance are unchanged. Rejected seeds and
+New recordings use the `contact-v2` dynamics described below. Rejected seeds and
 reasons are retained in `attempts.jsonl`; `status.json` reports progress.
 Re-running the collector resumes the same collection; changed code or scene
 settings require a separate output directory.
@@ -417,10 +417,9 @@ workers is the default; each owns an even share of `--num-envs`. Pass
 `--env-workers 1` for the original serial loop. Other useful overrides are
 `--rollout-steps`, `--episode-steps`, `--checkpoint-freq`, and `--updates`.
 
-The simulator backend is MuJoCo, not MJX: the task's compliant-pad grasp assist
-toggles equality constraints from contact state, and both ACT cameras must
-still be rendered by MuJoCo. Moving physics alone to MJX would not preserve
-those task dynamics or remove the rendering bottleneck.
+The simulator backend is MuJoCo, not MJX. Physical grasp state is measured from
+pad contact forces, and both ACT cameras are rendered by MuJoCo. Moving physics
+alone to MJX would still require porting those measurements and rendering.
 
 `tools/benchmark_act_batch.py` measures both GPU-only and end-to-end training
 throughput. On the RTX 4060 Laptop GPU used for this experiment, batch 12 was
@@ -434,8 +433,10 @@ to compare against the original path.
 
 ## Model rollout
 
-`rollout.py` runs the LoRA VLA-Adapter checkpoint produced by the training
-notebook in the same two-camera MuJoCo environment. It accepts an extracted
+`rollout.py` runs legacy LoRA VLA-Adapter checkpoints in the same two-camera
+MuJoCo environment. The [VLA training notebook](notebooks/robot_arm_learning_finetune_colab.ipynb)
+now performs full fine-tuning; its full-model checkpoints need a corresponding
+loader update before they can be used with `rollout.py`. It accepts an extracted
 checkpoint, the notebook's `.tar.gz`, or a Google Drive `.zip`; with no
 `--checkpoint` it uses the newest `robot-arm-learning*` artifact in
 `~/Downloads`. Archive extraction omits the optimizer state, which is not
@@ -544,3 +545,33 @@ Supporting tools: `tools/train_pi05_full.py`, `tools/evaluate_pi05.py`,
 `tools/build_pi05_notebook.py`. The notebook pins the runtime bundle and data to
 an immutable Hugging Face revision. See `reports/PI05_FULL_FINETUNE_20260925.md`
 for validation and the distinction between local smoke checks and full GPU training.
+
+## Gripper physics and recording compatibility
+
+The default simulator dynamics are `contact-v2`. Each `sim.step(n)` interpolates
+from the previously applied arm command to the new target across the `n` physics
+steps. The 30 Hz action format and 2 ms physics timestep are unchanged. Pad
+contacts hold the blocks with the existing 3 N actuator limit (about 1.5 N per
+finger); `impratio=100` suppresses slow contact creep. Grasp welds stay inactive.
+`sim.grasp_flags()` reports bilateral pad loads sustained for 20 ms and clears on
+contact loss. Lift and stack metrics still require sustained elevation/release.
+
+After directly restoring a simulator snapshot, call `sim.sync_control_state()`;
+when initializing a teleported arm pose, use `sim.set_arm_ctrl(q, immediate=True)`.
+Ordinary action updates should use `sim.set_arm_ctrl(q)` followed by `sim.step(n)`.
+The stored `ctrl` remains the command endpoint, so action labels stay compatible.
+
+New native recordings, rendered sources, exports, and trained checkpoints carry
+`simulation_dynamics`. Replay tools interpret untagged historical recordings as
+`weld-v1` and use their original stepped commands, weld assistance, and impedance.
+Mixed physics versions are rejected during export. Use a fresh collection/output
+directory for new demonstrations. Historical data and checkpoints are not rewritten.
+ACT, pi0.5, and VLA rollouts default to the corrected physics; pass
+`--dynamics weld-v1` to reproduce the old behavior. ACT/pi0.5 reports distinguish
+runtime dynamics from the checkpoint's training dynamics. RL optimizer resumes
+across physics versions are rejected; `--checkpoint` starts a fresh fine-tuning run.
+
+The [investigation](reports/GRIPPER_INVESTIGATION_20260926.md) and
+[implementation validation](reports/GRIPPER_IMPLEMENTATION_20260926.md) contain
+measurements and reproducible commands. `tools/investigate_gripper.py --variants production` exercises the production controller; its other variants preserve
+the investigation's historical baselines.

@@ -154,7 +154,10 @@ def install_guards():
             ds.meta.stats.update(stats)
         output = Path(cfg.output_dir)
         output.mkdir(parents=True, exist_ok=True)
-        run_state.update(cfg=cfg, output=output)
+        from sim.dynamics import provenance_dynamics
+        provenance_path = Path(cfg.dataset.root) / "meta/provenance.json"
+        provenance = json.loads(provenance_path.read_text()) if provenance_path.exists() else {}
+        run_state.update(cfg=cfg, output=output, dynamics=provenance_dynamics(provenance))
         (output / "episode_split.json").write_text(json.dumps({
             "train": expected_train, "validation": list(range(900, 1000)),
             "normalization_episodes": expected_train}, indent=2))
@@ -229,6 +232,7 @@ def install_guards():
                                f"{available/2**30:.1f} GiB available. Existing checkpoints are preserved.")
         original_save(*args, **kwargs)
         (checkpoint / "pretrained_model/deployment.json").write_text(json.dumps({
+            "simulation_dynamics": run_state["dynamics"],
             "fps": 30, "action_representation": "absolute", "action_alignment": "next_uniform_sample",
             "state_gripper": "command", "cameras": CAMERAS, "task": "stack the three colored cubes",
             "success_hold_seconds": 1.0, "dataset_repo": run_state["cfg"].dataset.repo_id,

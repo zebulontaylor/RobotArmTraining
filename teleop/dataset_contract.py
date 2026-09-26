@@ -28,7 +28,8 @@ def source_signature(path: Path) -> dict:
 
 def render_signature(hz: float, size: int, quality: int) -> dict:
     files = [ROOT / 'teleop/render_vla_dataset.py', Path(__file__),
-             ROOT / 'sim/panthera_env.py', *sorted((ROOT / 'sim/panthera').glob('*.xml'))]
+             ROOT / 'sim/panthera_env.py', ROOT / 'sim/dynamics.py',
+             *sorted((ROOT / 'sim/panthera').glob('*.xml'))]
     return {'version': 2, 'sample_hz': hz, 'image_size': [size, size],
             'jpeg_quality': quality,
             'implementation': {str(p.relative_to(ROOT)): file_hash(p) for p in files}}

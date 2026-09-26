@@ -69,6 +69,7 @@ class ScriptedCollectionTest(unittest.TestCase):
                 sim.data.qvel[sim.finger_dofadr] = raw['finger_dq'][0]
                 sim.set_object_poses(raw['obj_pos'][0], raw['obj_quat'][0])
                 sim.data.ctrl[:] = actions[0]
+                sim.sync_control_state()
                 mujoco.mj_forward(sim.model, sim.data)
                 clock = PhysicsClock(30, sim.dt)
                 stable = 0
@@ -77,7 +78,7 @@ class ScriptedCollectionTest(unittest.TestCase):
                     sim.set_gripper(action[6]/.04)
                     sim.step(clock.next_steps())
                     success = stack_metrics(sim.object_poses()[0])['three_stack']
-                    released = not any(sim.data.eq_active[e] for e in sim._grasp_eq)
+                    released = not sim.grasped
                     stable = stable+1 if success and released else 0
                 self.assertGreaterEqual(stable, 30)
 

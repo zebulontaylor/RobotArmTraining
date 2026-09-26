@@ -53,6 +53,8 @@ def main() -> None:
         default=0,
         help="control steps before stopping; 0 (default) runs until q",
     )
+    parser.add_argument("--dynamics", choices=("contact-v2", "weld-v1"), default="contact-v2",
+                        help="weld-v1 explicitly reproduces historical assisted physics")
     parser.add_argument("--hz", type=float, help="must match checkpoint FPS; read automatically by default")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--action-steps", type=int, help="execute this many actions per query; disables averaging unless explicitly requested")
@@ -145,7 +147,7 @@ def main() -> None:
     if args.max_joint_step is None and contract_path.is_file():
         args.max_joint_step = json.loads(contract_path.read_text()).get("max_joint_step")
     environment = contract.get("environment", {})
-    sim = PantheraSim(REPO_ROOT / environment["scene"]) if environment else PantheraSim()
+    sim = PantheraSim(REPO_ROOT / environment["scene"], dynamics=args.dynamics) if environment else PantheraSim(dynamics=args.dynamics)
     if environment and sim.object_names != environment["objects"]:
         raise ValueError("Checkpoint object order does not match the scene")
     physics_clock = PhysicsClock(args.hz, sim.dt)
@@ -237,11 +239,11 @@ def main() -> None:
             positions, _ = sim.object_poses()
             metrics = task_stack_metrics(positions)
             milestones["lifted"] |= bool(metrics["lifted_cubes"])
-            milestones["grasped"] |= any(eid >= 0 and sim.data.eq_active[eid] for eid in sim._grasp_eq)
+            milestones["grasped"] |= sim.grasped
             milestones["two_stacked"] |= bool(metrics["two_stack"])
             milestones["three_stacked"] |= bool(metrics["three_stack"])
-            holding = any(eid >= 0 and sim.data.eq_active[eid] for eid in sim._grasp_eq)
-            flags = np.array([eid >= 0 and bool(sim.data.eq_active[eid]) for eid in sim._grasp_eq])
+            holding = sim.grasped
+            flags = sim.grasp_flags()
             milestones["sustained_pickup"] |= pickup.update(positions[:, 2], flags, step)
             if pickup.success and pickup_seconds is None:
                 pickup_seconds = (pickup.first_success_step + 1) / args.hz
@@ -315,6 +317,8 @@ def main() -> None:
 
     final_positions, _ = sim.object_poses()
     report = {
+        "simulation_dynamics": sim.dynamics,
+        "training_simulation_dynamics": contract.get("simulation_dynamics", "weld-v1"),
         "environment": environment,
         "action_representation": representation,
         "pickup_seconds": pickup_seconds,

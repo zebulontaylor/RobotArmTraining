@@ -31,6 +31,7 @@ import cv2  # noqa: E402
 import mujoco  # noqa: E402
 
 from panthera_env import PantheraSim  # noqa: E402
+from sim.dynamics import recorded_dynamics
 from teleop.dataset_contract import DEFAULT_HZ, DEFAULT_RENDERED, source_signature, render_signature
 
 DEFAULT_INPUT = REPO_ROOT / "data"
@@ -149,6 +150,10 @@ def cache_valid(output: Path, signature: dict, settings: dict) -> bool:
 def render_episode(path: Path, output: Path, sim: PantheraSim,
                    renderers, cameras, hz: float, quality: int, settings=None) -> int:
     signature = source_signature(path)
+    mode = recorded_dynamics(json.loads((path / "meta.json").read_text()))
+    # Only legacy finger reconstruction simulates here; recorded poses render
+    # directly. Match the source's contact impedance for that reconstruction.
+    sim.model.opt.impratio = 100 if mode == "contact-v2" else 10
     settings = settings or render_signature(hz, renderers[0].height, quality)
     with np.load(path / "data.npz") as source:
         required = {"q", "ctrl", "ee_pos", "ee_quat", "obj_pos", "obj_quat", "gripper"}
@@ -197,6 +202,7 @@ def render_episode(path: Path, output: Path, sim: PantheraSim,
             "sample_hz": hz, "cameras": ["shoulder", "wrist"],
             "source_signature": signature, "render_signature": settings,
             "clock_method": clock_method, "finger_method": finger_method,
+            "simulation_dynamics": mode,
             "native_hz": native_hz,
         }, indent=2) + "\n")
         if output.exists():

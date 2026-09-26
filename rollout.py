@@ -442,7 +442,7 @@ def rollout(args, policy) -> None:
     from panthera_env import PantheraSim
     from render_vla_dataset import shoulder_camera, wrist_camera
 
-    sim = PantheraSim()
+    sim = PantheraSim(dynamics=args.dynamics)
 
     def reset_scene(seed: int) -> tuple[np.ndarray, np.ndarray]:
         sim.reset(
@@ -465,7 +465,7 @@ def rollout(args, policy) -> None:
             )
         sim.data.qpos[sim.arm_qadr] = start_q
         sim.data.qvel[sim.arm_dofadr] = 0.0
-        sim.set_arm_ctrl(start_q)
+        sim.set_arm_ctrl(start_q, immediate=True)
         mujoco.mj_forward(sim.model, sim.data)
         return sim.ee_pose()
 
@@ -595,6 +595,7 @@ def parse_args() -> argparse.Namespace:
         "--steps", type=int, default=0,
         help="control steps before stopping; 0 (default) runs until q",
     )
+    parser.add_argument("--dynamics", choices=("contact-v2", "weld-v1"), default="contact-v2")
     parser.add_argument("--hz", type=float, default=10.0)
     parser.add_argument("--open-loop", type=int, default=8, choices=range(1, 9), metavar="1..8")
     parser.add_argument("--seed", type=int, default=7)

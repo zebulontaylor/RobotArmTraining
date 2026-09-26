@@ -150,7 +150,7 @@ def randomize_arm_start(sim: PantheraSim, start_range, rng=None) -> None:
         return
     sim.data.qpos[sim.arm_qadr] = q
     sim.data.qvel[sim.arm_dofadr] = 0.0
-    sim.set_arm_ctrl(q)
+    sim.set_arm_ctrl(q, immediate=True)
     mujoco.mj_forward(sim.model, sim.data)
 
 
@@ -602,6 +602,7 @@ def main() -> None:
         "robot": "Panthera-HT (HighTorque) 6-DoF + parallel gripper",
         "scene": str(sim.scene_path.relative_to(REPO_ROOT)),
         "control_mode": "keyboard",
+        "simulation_dynamics": sim.dynamics,
         "track_rotation": bool(args.rotation),
         "recording": {"trigger": "keyboard_or_mouse_motion",
                       "max_duration_s": args.max_duration},

@@ -83,7 +83,12 @@ def main():
     episodes = sorted(args.input.glob('episode_*/data.npz'))
     if not episodes:
         raise SystemExit('No source episodes')
+    from sim.dynamics import recorded_dynamics
     metadata = [json.loads(p.with_name('meta.json').read_text()) for p in episodes]
+    modes = {recorded_dynamics(m) for m in metadata}
+    if len(modes) != 1:
+        raise SystemExit('Export each simulation dynamics version separately.')
+    dynamics = modes.pop()
     scenes = {m.get('scene', 'sim/panthera/scene.xml') for m in metadata}
     if len(scenes) != 1:
         raise SystemExit('Export one scene per dataset.')
@@ -152,7 +157,7 @@ def main():
         image_size=[256,256], cameras={'primary':'shoulder','wrist':'wrist'},
         image_storage='embedded in LeRobot Parquet; rerender raw episodes to restore JPEG cache')
     (args.rendered/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-    provenance = dict(version=2, fps=30, rendered_root=str(args.rendered.resolve()),
+    provenance = dict(simulation_dynamics=dynamics, version=2, fps=30, rendered_root=str(args.rendered.resolve()),
         render_manifest_sha256=file_hash(args.rendered/'manifest.json'),
         converter_sha256=file_hash(ROOT/'teleop/build_lerobot_dataset.py'),
         scripted_exporter_sha256=file_hash(Path(__file__)),

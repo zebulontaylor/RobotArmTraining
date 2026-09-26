@@ -25,6 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 from teleop.dataset_contract import DEFAULT_RENDERED, DEFAULT_DATASET, validate_rendered, file_hash
 
+from sim.dynamics import provenance_dynamics
+
 DEFAULT_INPUT = DEFAULT_RENDERED
 DEFAULT_OUTPUT = DEFAULT_DATASET
 JOINT_NAMES = [f"joint{i}" for i in range(1, 7)] + ["gripper_open_m"]
@@ -81,6 +83,8 @@ def main() -> None:
         raise SystemExit(
             f"manifest says {manifest['num_episodes']} episodes but found {len(episodes)}"
         )
+    sources = {p.name: json.loads((p / "source.json").read_text()) for p in episodes}
+    dynamics = provenance_dynamics({"sources": sources})
     if args.output.exists():
         if not args.force:
             raise SystemExit(f"output already exists: {args.output} (use --force to rebuild)")
@@ -136,11 +140,11 @@ def main() -> None:
         dataset.finalize()
         dataset.stop_image_writer()
 
-    provenance = {"version": 2, "fps": fps, "rendered_root": str(args.input.resolve()),
+    provenance = {"simulation_dynamics": dynamics, "version": 2, "fps": fps, "rendered_root": str(args.input.resolve()),
                   "render_manifest_sha256": file_hash(args.input / "manifest.json"),
                   "converter_sha256": file_hash(Path(__file__)),
                   "state_gripper": "command", "action_alignment": "next_uniform_sample",
-                  "sources": {p.name: json.loads((p / "source.json").read_text()) for p in episodes}}
+                  "sources": sources}
     (args.output / "meta/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(f"wrote {len(episodes)} episodes / {manifest['num_frames'] - len(episodes)} frames to {args.output}")
 

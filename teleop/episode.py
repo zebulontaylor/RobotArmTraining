@@ -28,7 +28,8 @@ FIELDS = (
 
 
 class Episode:
-    def __init__(self) -> None:
+    def __init__(self, *, simulation_dynamics: str = "contact-v2") -> None:
+        self.simulation_dynamics = simulation_dynamics
         self.rows: list[dict] = []
         self.sim_frames: list[np.ndarray] = []
         self.t0 = time.time()
@@ -51,6 +52,7 @@ class Episode:
         np.savez_compressed(out_dir / "data.npz", **arrays)
 
         saved_meta = dict(meta)
+        saved_meta.setdefault("simulation_dynamics", self.simulation_dynamics)
         duration = float(self.rows[-1]["t"]) if self.rows else 0.0
         saved_meta.update({
             "n_steps": len(self.rows),

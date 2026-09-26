@@ -43,7 +43,7 @@ def main():
         if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != expected[name]:
             raise ValueError(f"Simulator differs from the demonstration export: {name}")
     paths = [ROOT / name for name in (
-        "sim/panthera_env.py", "sim/stack_task.py", "sim/panthera/scene.xml", "sim/panthera/panthera.xml",
+        "sim/panthera_env.py", "sim/dynamics.py", "sim/stack_task.py", "sim/panthera/scene.xml", "sim/panthera/panthera.xml",
         "teleop/render_vla_dataset.py", "teleop/dataset_contract.py",
         "tools/train_pi05_full.py", "tools/evaluate_pi05.py", "tools/pi05_checkpoint_backup.py")]
     paths += simulator_meshes(ROOT)

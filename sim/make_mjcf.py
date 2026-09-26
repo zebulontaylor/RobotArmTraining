@@ -46,12 +46,9 @@ GAINS = {
     "joint4": (1200.0, 23.0), "joint5": (800.0, 14.0),  "joint6": (800.0, 14.0),
 }
 GRIPPER_GAIN = (400.0, 20.0)
-# Per-finger clamp force. The old 100 N limit let the position servo generate
-# roughly 9--13 N on these cubes, then a weld removed the remaining motion.
-# Three newtons survives an abrupt vertical teleop command with a centred 45 g
-# cube, while marginal and diagonal grasps still creep or drop under acceleration.
-# At 2 N a smooth scripted lift passed, but a real target-position jump dropped
-# even a good grasp.
+# Single actuator force shared by the coupled jaws: 3 N produces about 1.5 N
+# per pad. Physics-rate interpolation prevents large acceleration bursts from
+# stepped position targets, so physical grasps work without increasing force.
 GRIPPER_FORCE = 3.0
 
 # Elbow-up rest pose; joint2/joint3 have one-sided ranges so 0 is a hard stop.
@@ -135,10 +132,8 @@ TABLE_THICK = 0.02
 # never the limiting factor, heavy enough not to be flicked away on contact.
 CUBE_HALF = 0.0225
 CUBE_DENSITY = 500.0
-# MuJoCo takes the per-axis minimum of the two geoms, so this also caps
-# table and cube-cube contacts. Keep sliding low so cubes still slide on
-# the table and unstick from each other; the pinch itself is held by the
-# pad-cube contact pairs, not by this number.
+# Equal-priority geom contacts use the per-axis maximum. Explicit pad-cube
+# pairs below override these coefficients for pinches; table contacts do not.
 CUBE_FRICTION = "0.8 0.08 0.004"
 CUBES = [
     ("cube_red",   (0.38, 0.12), (0.85, 0.20, 0.18, 1)),
@@ -240,7 +235,7 @@ def add_objects(wb):
         # condim 6 gives sliding + rolling + torsion, so a cube pinched
         # between two flat faces cannot spin about the pinch axis or roll
         # out when the wrist pitches. Contact friction is the per-axis
-        # minimum of this geom and the other (pad or table).
+        # maximum of equal-priority geoms, unless an explicit pair overrides it.
         g.set("condim", "6"); g.set("friction", CUBE_FRICTION)
         g.set("solimp", "0.98 0.99 0.001"); g.set("solref", "0.005 1")
 
@@ -248,10 +243,8 @@ def add_objects(wb):
 def add_grasp_contacts(scene):
     """Give finger pads rubber-like friction without making the table sticky.
 
-    Explicit pairs override the cube geom's lower rolling/torsional values only
-    when a fingertip is involved. An inactive constraint per cube represents the
-    contact patch formed when rubber pads deform around a well-seated face grasp.
-    PantheraSim activates it only after both pads touch and rejects corner grasps.
+    Explicit pairs set the actual pad-cube friction. Inactive welds remain only
+    for replaying weld-v1 recordings; contact-v2 never activates them.
     """
     eqs = sub(scene, "equality")
     for name, _, _ in CUBES:
@@ -292,11 +285,10 @@ def build(objects: bool = True):
     opt = ET.Element("option")
     opt.set("timestep", "0.002")
     opt.set("integrator", "implicitfast")
-    # Elliptic cones model isotropic pad friction. Do not enable MuJoCo's
-    # no-slip post-pass here: its purpose is to erase the small tangential
-    # drift that makes a marginal grasp look physical.
+    # Elliptic cones plus higher friction impedance suppress slow numerical
+    # creep. Command interpolation addresses dynamic slip; no weld is needed.
     opt.set("cone", "elliptic")
-    opt.set("impratio", "10")
+    opt.set("impratio", "100")
     root.insert(1, opt)
 
     # 2. Default classes. Visual geoms never collide; collision geoms are never
