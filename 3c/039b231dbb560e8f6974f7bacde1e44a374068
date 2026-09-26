@@ -1,0 +1,32 @@
+tests/test_vla_full_notebook.py
+  s_70595c62c2a8db::t_994b383a431813 34,69-72,76-81,106-138
+  s_70595c62c2a8db::t_4202c2cfd2a4e9 82-105
+  s_70595c62c2a8db::t_00c7dd2bf35558 139-140
+teleop/build_panthera_ik_rlds.py
+  s_70595c62c2a8db::t_06adc93d23029b 100-101
+  s_70595c62c2a8db::t_b9c77181ed5888 1-99,102-173
+notebooks/robot_arm_learning_finetune_colab.ipynb
+  s_70595c62c2a8db::t_caa3474b99860a 7,9,11-13,23-24,30,41,46,81-82,161-163,170,172,192,196-199,201,206-207,212-213,216-225,276,285,303-308,310,692,694,703,706-708,710-712,714-733,735,742-744,753-754,929,938-943,952,954-966,1019,1039-1043,1056,1078,1101
+  s_70595c62c2a8db::t_0248a3c12fa9e5 755-758,760-853,856-928,998-999
+  s_70595c62c2a8db::t_457c2a0557d9ed 854-855
+tests/test_vla_ik_rlds.py
+  s_70595c62c2a8db::t_994b383a431813 1-88
+README.md
+  s_70595c62c2a8db::t_ac89f97ac3d215 506-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c039b231dbb560e8f6974f7bacde1e44a374068",
+  "prompts": {},
+  "sessions": {
+    "s_70595c62c2a8db": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0dddd-1b6d-76b2-aa78-8dc8c8bc167c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    }
+  }
+}
