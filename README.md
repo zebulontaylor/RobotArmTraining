@@ -433,14 +433,16 @@ to compare against the original path.
 
 ## Model rollout
 
-`rollout.py` runs legacy LoRA VLA-Adapter checkpoints in the same two-camera
-MuJoCo environment. The [VLA training notebook](notebooks/robot_arm_learning_finetune_colab.ipynb)
-now performs full fine-tuning; its full-model checkpoints need a corresponding
-loader update before they can be used with `rollout.py`. It accepts an extracted
-checkpoint, the notebook's `.tar.gz`, or a Google Drive `.zip`; with no
-`--checkpoint` it uses the newest `robot-arm-learning*` artifact in
-`~/Downloads`. Archive extraction omits the optimizer state, which is not
-needed for inference.
+`rollout.py` runs both full-model and legacy LoRA VLA-Adapter checkpoints in
+the two-camera MuJoCo environment. It detects the dataset from the checkpoint:
+the IK three-block model uses absolute joint targets, gripper opening in metres,
+and 30 Hz control with training-matched random start poses; legacy teleop models
+use end-effector deltas at 10 Hz. It accepts an extracted checkpoint, the
+notebook's `.tar.gz`, or a Google Drive `.zip`. With no `--checkpoint` it selects
+the newest `robot-arm-learning*` or `panthera-ik3-30hz-full*` artifact in
+`~/Downloads`. Archive extraction skips optimizer state and downloaded Python
+code. Full-model inference uses the saved model and processor directly and
+does not download a separate base model.
 
 The script automatically restarts itself in the project's existing
 `~/venvs/vla-adapter` environment, so it can be launched with plain `python`.
@@ -450,15 +452,45 @@ Install the simulation dependencies into that environment once:
 ~/venvs/vla-adapter/bin/python -m pip install -r requirements.txt
 ```
 
-Then run a real-time rollout. It continues until you press `q`; press `r` to
+Then run an interactive rollout. It continues until you press `q`; press `r` to
 reset the arm and start with a newly randomized cube layout:
 
 ```bash
 python rollout.py
 ```
 
-The first run downloads the 2.5 GiB base model and may also populate the
-Hugging Face cache with its Qwen/DINO/SigLIP backbones. Useful options:
+For an extracted full-model checkpoint:
+
+```bash
+python rollout.py --checkpoint /path/to/checkpoint
+```
+
+If Drive downloaded the model separately from the ZIP, pass both explicitly:
+
+```bash
+python rollout.py --checkpoint /path/to/checkpoint.zip \
+  --model-weights ~/Downloads/model-001.safetensors
+```
+
+The script assembles these into its inference cache and prints the resulting
+directory, which can be reused with `--checkpoint`. The standalone weights
+are installed as `model.safetensors`; `training_state--latest_checkpoint.pt`
+is not needed. A full checkpoint needs the model, config/processor/tokenizer
+files, dataset statistics, action head, and proprio projector. The notebook's
+`validation_split.json` records the action contract and sample rate. Passing a
+different `--hz` or scaling absolute joint targets is rejected for IK models.
+
+Save a 30-second simulated rollout of the full model:
+
+```bash
+python rollout.py --checkpoint /path/to/checkpoint \
+  --steps 900 --no-display --no-realtime --video outputs/vla/rollout.mp4
+```
+
+Simulation and video use 30 Hz; wall-clock speed depends on inference time.
+`--open-loop 1` re-queries every control step instead of executing all eight
+predicted actions. Legacy LoRA checkpoints may download the 2.5 GiB base model
+and its Qwen/DINO/SigLIP backbones on first use. Legacy examples (10 Hz):
 
 ```bash
 # Save a headless 20-second rollout using a particular artifact.
@@ -516,7 +548,7 @@ held out for validation, and normalization uses training episodes only.
 
 Start a fresh run for this dataset. The notebook rejects resuming teleop/EEF
 runs and uses separate dataset caches and checkpoint directories. These joint
-control checkpoints are incompatible with the legacy EEF-based `rollout.py`.
+control checkpoints use `rollout.py`'s full-model joint-control path (see above).
 Use an A100-class GPU and at least 100 GiB free runtime disk for conversion,
 training dependencies, and the model, plus persistent checkpoint storage.
 
@@ -592,3 +624,57 @@ The [investigation](reports/GRIPPER_INVESTIGATION_20260926.md) and
 [implementation validation](reports/GRIPPER_IMPLEMENTATION_20260926.md) contain
 measurements and reproducible commands. `tools/investigate_gripper.py --variants production` exercises the production controller; its other variants preserve
 the investigation's historical baselines.
+
+## Onshape actuator assembly experiment
+
+The [actuator environment](sim/actuator/README.md) imports the actual Onshape
+carrier and planetary-gear meshes into a separate Panthera scene, excluding
+the stator and rotor. Parts start at fixed stations with ±2 mm / ±2° variation.
+The contact-only IK controller seats the large carrier and all four gears with
+`tools/try_actuator_assembly.py --trial-only --all-gears`. The assembly layout,
+rim grasps, and servo tracking correction keep the motions within the arm's
+limits and the tight gear clearance.
+Use `--with-pins` instead of `--all-gears` to also pick, align, and seat all four
+pins in the fixture with physical depth stops. The original gear-only scene and
+recordings remain compatible.
+See the [measured results](reports/actuator_assembly.md)
+for physical trials, limitations, and replay instructions.
+
+## Bimanual place-then-push IK
+
+The [bimanual controller](tools/bimanual_actuator_ik.py) follows the method in
+the kept `Desktop/Panthera-Teleop` sessions: the right arm holds the carrier
+with a 45° wrist lean, while the left arm partially inserts a gear, pushes it
+into place, adds the pin, and presses it down. The separate scene has two
+physical arms and exactly three cameras: overhead, left wrist, and right wrist.
+Loose gears start directly on the table; this mode has no pickup stands.
+
+```bash
+OPENBLAS_NUM_THREADS=1 .venv-assembly/bin/python tools/bimanual_actuator_ik.py \
+  --seed 0 --output outputs/bimanual_ik/seed_0 --video
+
+# Render a saved rollout at 4× playback speed.
+OPENBLAS_NUM_THREADS=1 .venv-assembly/bin/python tools/replay_bimanual_actuator.py \
+  outputs/bimanual_ik/seed_0 --stride 4
+```
+
+Starts vary by ±2 mm and ±2°; `--placement-error-mm .35` adds an approximate
+lateral placement target before the pushes. `--holder-angle-deg` adjusts the
+support wrist lean (0–45°). Quintic motion and joint command bounds keep speed
+below 0.6 rad/s and acceleration below 2 rad/s². Seating pushes use contact
+loads to slow advancement and a small lateral search. The shallow rim pinch
+supports the gear during its first push; a free rim push and downward settling
+press follow release. Success requires physical gear and pin seating at the
+final supported hold, including engagement through both bores.
+
+`rollout.npz` records both arms as 14-value state/action arrays, raw full-model
+qpos/controls, stage IDs, contact loads, and tracking errors at 20 Hz.
+Simulated gripper values are **opening in metres**; the real kept recordings
+use **motor radians** and measured next-pose actions. These contracts are not
+interchangeable. The real USB wrist-to-arm assignments remain unverified, so
+synthetic streams use explicit arm names. Scene placement and camera poses are
+approximations, and the small carrier retains its physical fixture. The IK
+uses privileged object/grasp geometry; it is a simulation demonstrator, not a
+camera-only policy or hardware controller.
+
+See [the session review and rollout measurements](reports/bimanual_actuator_ik.md).

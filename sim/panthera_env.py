@@ -396,13 +396,16 @@ class PantheraSim:
             big = float(np.abs(move).max())
             if big > max_joint_step:
                 q_out = q_start + move * (max_joint_step / big)
-                # Report the error at the pose actually commanded.
-                d.qpos[self.arm_qadr] = q_out
-                mujoco.mj_kinematics(self.model, d)
-                mujoco.mj_comPos(self.model, d)
-                err = self._ee_error(target_pos, target_quat, d)
-                perr = float(np.linalg.norm(err[:3]))
-                rerr = float(np.linalg.norm(err[3:]))
+
+        # The last iteration can change q even when the rate limiter does not.
+        # Always report the residual of the returned solution, not the pose
+        # before that iteration (also covers iters=0).
+        d.qpos[self.arm_qadr] = q_out
+        mujoco.mj_kinematics(self.model, d)
+        mujoco.mj_comPos(self.model, d)
+        err = self._ee_error(target_pos, target_quat, d)
+        perr = float(np.linalg.norm(err[:3]))
+        rerr = float(np.linalg.norm(err[3:]))
 
         return q_out, perr, rerr
 

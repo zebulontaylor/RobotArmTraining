@@ -37,13 +37,13 @@ Saved and live images at the initial state align visually. Mean RGB differences 
 
 ## Artifacts
 
-- Reusable diagnostic: [tools/overfit_act.py](/home/zeb/Desktop/RobotArmLearning/tools/overfit_act.py)
-- Standard-run results: [result.json](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923/result.json)
-- Continuation results: [result.json](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923_fp32/result.json)
-- Combined final summary: [summary.json](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923_fp32/summary.json)
-- Successful in-process video: [rollout_005000.mp4](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923_fp32/rollout_005000.mp4)
-- Reload failure: [rollout.mp4](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923_fp32/reload_1/rollout.mp4)
-- Second reload failure: [rollout.mp4](/home/zeb/Desktop/RobotArmLearning/outputs/act/ik_overfit_20260923_fp32/reload_2/rollout.mp4)
+- Reusable diagnostic: [tools/overfit_act.py](../tools/overfit_act.py)
+- Standard-run results: [result.json](../outputs/act/ik_overfit_20260923/result.json)
+- Continuation results: [result.json](../outputs/act/ik_overfit_20260923_fp32/result.json)
+- Combined final summary: [summary.json](../outputs/act/ik_overfit_20260923_fp32/summary.json)
+- Successful in-process video: [rollout_005000.mp4](../outputs/act/ik_overfit_20260923_fp32/rollout_005000.mp4)
+- Reload failure: [rollout.mp4](../outputs/act/ik_overfit_20260923_fp32/reload_1/rollout.mp4)
+- Second reload failure: [rollout.mp4](../outputs/act/ik_overfit_20260923_fp32/reload_2/rollout.mp4)
 - Final checkpoint: `outputs/act/ik_overfit_20260923_fp32/checkpoint`.
 
 The 18 existing ACT tests pass. The new harness was exercised through training, recorded-action replay, complete offline evaluation and fresh-process checkpoint evaluation. Existing full-dataset training and its checkpoints were not modified.

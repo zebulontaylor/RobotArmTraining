@@ -44,6 +44,51 @@ REQUIRED_CHECKPOINT_FILES = (
     "lora_adapter/adapter_config.json",
     "lora_adapter/adapter_model.safetensors",
 )
+JOINT_UNNORM_KEY = "panthera_ik_three_block"
+JOINT_ACTION_CONTRACT = "absolute_next_joint_targets_radians_gripper_metres"
+COMMON_CHECKPOINT_FILES = REQUIRED_CHECKPOINT_FILES[:3]
+FULL_CHECKPOINT_FILES = COMMON_CHECKPOINT_FILES + (
+    "config.json", "preprocessor_config.json", "tokenizer_config.json",
+)
+
+
+def checkpoint_files(names: list[str]) -> list[str]:
+    """Select inference artifacts, excluding optimizer state and downloaded code."""
+    available = set(names)
+    full = "config.json" in available and "lora_adapter/adapter_config.json" not in available
+    required = list(FULL_CHECKPOINT_FILES if full else REQUIRED_CHECKPOINT_FILES)
+    if full:
+        # Only the single-file HF format is currently emitted by our notebook.
+        required.append("model.safetensors")
+        required.extend(name for name in (
+            "processor_config.json", "tokenizer.json", "vocab.json", "merges.txt",
+            "special_tokens_map.json", "added_tokens.json", "generation_config.json",
+        ) if name in available)
+    if "validation_split.json" in available:
+        required.append("validation_split.json")
+    missing = set(required) - available
+    if missing:
+        hint = " Pass --model-weights /path/to/model-001.safetensors for a split Drive download." if "model.safetensors" in missing else ""
+        raise SystemExit(f"Checkpoint is missing: {', '.join(sorted(missing))}.{hint}")
+    return required
+
+
+def checkpoint_contract(checkpoint: Path) -> SimpleNamespace:
+    stats = json.loads((checkpoint / "dataset_statistics.json").read_text())
+    metadata_path = checkpoint / "validation_split.json"
+    metadata = json.loads(metadata_path.read_text()) if metadata_path.is_file() else {}
+    key = metadata.get("dataset_name")
+    if key is None and len(stats) == 1:
+        key = next(iter(stats))
+    if key not in (UNNORM_KEY, JOINT_UNNORM_KEY) or key not in stats:
+        raise SystemExit(f"Unsupported checkpoint dataset: {key!r}")
+    joint_control = key == JOINT_UNNORM_KEY
+    if joint_control and metadata.get("action_contract", JOINT_ACTION_CONTRACT) != JOINT_ACTION_CONTRACT:
+        raise SystemExit("Checkpoint has an unsupported joint action contract")
+    hz = float(metadata.get("sample_hz", 30.0 if joint_control else 10.0))
+    if not np.isfinite(hz) or hz <= 0:
+        raise SystemExit("Checkpoint has an invalid sample_hz")
+    return SimpleNamespace(unnorm_key=key, joint_control=joint_control, hz=hz)
 
 
 def existing_vla_venv() -> Path | None:
@@ -93,19 +138,20 @@ def default_checkpoint() -> Path:
         root = Path.home() / dirname
         if not root.is_dir():
             continue
-        candidates.extend(p for p in root.glob("robot-arm-learning*") if p.is_dir())
-        candidates.extend(root.glob("robot-arm-learning*.zip"))
-        candidates.extend(root.glob("robot-arm-learning*.tar.gz"))
+        for prefix in ("robot-arm-learning", "panthera-ik3-30hz-full"):
+            candidates.extend(p for p in root.glob(f"{prefix}*") if p.is_dir())
+            candidates.extend(root.glob(f"{prefix}*.zip"))
+            candidates.extend(root.glob(f"{prefix}*.tar.gz"))
     if not candidates:
         raise SystemExit(
-            "No robot-arm-learning checkpoint found in ~/Downloads (or ~/Downlods). "
+            "No VLA checkpoint found in ~/Downloads (or ~/Downlods). "
             "Pass it explicitly with --checkpoint."
         )
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _archive_root(names: list[str]) -> str:
-    matches = [name for name in names if name.endswith("/dataset_statistics.json")]
+    matches = [name for name in names if name == "dataset_statistics.json" or name.endswith("/dataset_statistics.json")]
     if len(matches) != 1:
         raise SystemExit(
             "Expected exactly one dataset_statistics.json in the checkpoint archive; "
@@ -114,35 +160,45 @@ def _archive_root(names: list[str]) -> str:
     return matches[0][: -len("dataset_statistics.json")]
 
 
-def materialize_checkpoint(source: Path, cache_root: Path) -> Path:
+def materialize_checkpoint(source: Path, cache_root: Path, model_weights: Path | None = None) -> Path:
     source = source.expanduser().resolve()
+    if model_weights is not None:
+        model_weights = model_weights.expanduser().resolve()
+        if not model_weights.is_file() or model_weights.suffix != ".safetensors":
+            raise SystemExit(f"Expected a safetensors model file: {model_weights}")
     if source.is_dir():
         if (source / "dataset_statistics.json").is_file():
-            missing = [name for name in REQUIRED_CHECKPOINT_FILES if not (source / name).is_file()]
-            if missing:
-                raise SystemExit(f"Checkpoint directory is missing: {', '.join(missing)}")
+            if model_weights is not None:
+                raise SystemExit("--model-weights is for archives; place model.safetensors in the checkpoint directory")
+            checkpoint_files([p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()])
             return source
         children = [p.parent for p in source.rglob("dataset_statistics.json")]
         if len(children) == 1:
-            return children[0]
+            return materialize_checkpoint(children[0], cache_root, model_weights)
         raise SystemExit(f"Could not identify a checkpoint directory under {source}")
     if not source.is_file():
         raise SystemExit(f"Checkpoint does not exist: {source}")
 
-    fingerprint = hashlib.sha256(
-        f"{source}:{source.stat().st_size}:{source.stat().st_mtime_ns}".encode()
-    ).hexdigest()[:12]
+    identity = f"{source}:{source.stat().st_size}:{source.stat().st_mtime_ns}"
+    if model_weights is not None:
+        identity += f":{model_weights}:{model_weights.stat().st_size}:{model_weights.stat().st_mtime_ns}"
+    fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:12]
     output = cache_root / "checkpoints" / f"{source.name}-{fingerprint}"
     complete = output / ".inference-files-complete"
-    if complete.is_file() and all((output / name).is_file() for name in REQUIRED_CHECKPOINT_FILES):
-        return output
+    if complete.is_file():
+        return materialize_checkpoint(output, cache_root)
 
     print(f"Extracting inference weights from {source} to {output}", flush=True)
     output.mkdir(parents=True, exist_ok=True)
     if zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
             root = _archive_root(archive.namelist())
-            for relative in REQUIRED_CHECKPOINT_FILES:
+            names = [name[len(root):] for name in archive.namelist() if name.startswith(root)]
+            if model_weights is not None:
+                names.append("model.safetensors")
+            for relative in checkpoint_files(names):
+                if relative == "model.safetensors" and model_weights is not None:
+                    continue
                 member = root + relative
                 try:
                     info = archive.getinfo(member)
@@ -156,7 +212,12 @@ def materialize_checkpoint(source: Path, cache_root: Path) -> Path:
         with tarfile.open(source, "r:*") as archive:
             names = archive.getnames()
             root = _archive_root(names)
-            for relative in REQUIRED_CHECKPOINT_FILES:
+            relative_names = [name[len(root):] for name in names if name.startswith(root)]
+            if model_weights is not None:
+                relative_names.append("model.safetensors")
+            for relative in checkpoint_files(relative_names):
+                if relative == "model.safetensors" and model_weights is not None:
+                    continue
                 member = archive.getmember(root + relative)
                 reader = archive.extractfile(member)
                 if reader is None:
@@ -167,6 +228,15 @@ def materialize_checkpoint(source: Path, cache_root: Path) -> Path:
                     shutil.copyfileobj(reader, writer, length=16 * 1024 * 1024)
     else:
         raise SystemExit(f"Unsupported checkpoint archive: {source}")
+    if model_weights is not None:
+        # Keep the cache usable even if the original download is later removed.
+        destination = output / "model.safetensors"
+        if not destination.exists():
+            try:
+                os.link(model_weights, destination)
+            except OSError:
+                shutil.copyfile(model_weights, destination)
+    checkpoint_files([p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()])
     complete.write_text("ok\n")
     return output
 
@@ -197,7 +267,7 @@ def require_ml_dependencies(vla_dir: Path) -> None:
             "The VLA inference environment is not installed (missing "
             + ", ".join(missing)
             + "). Follow the one-time setup in README.md, then run this script "
-              "with .venv-rollout/bin/python."
+              "with ~/venvs/vla-adapter/bin/python."
         )
 
 
@@ -224,7 +294,7 @@ def strip_ddp(state: dict) -> dict:
     return {key.removeprefix("module."): value for key, value in state.items()}
 
 
-def load_policy(vla_dir: Path, base_dir: Path, checkpoint: Path, device_name: str):
+def load_policy(vla_dir: Path, base_dir: Path | None, checkpoint: Path, device_name: str):
     import torch
     from peft import PeftModel
     from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
@@ -248,51 +318,69 @@ def load_policy(vla_dir: Path, base_dir: Path, checkpoint: Path, device_name: st
     AutoImageProcessor.register(OpenVLAConfig, PrismaticImageProcessor, exist_ok=True)
     AutoProcessor.register(OpenVLAConfig, PrismaticProcessor, exist_ok=True)
     AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction, exist_ok=True)
-    processor = AutoProcessor.from_pretrained(config_dir, trust_remote_code=False)
-
-    print("Loading base vision-language model...", flush=True)
-    # The native checkpoint contains every base weight. Inference mode builds
-    # the Qwen module from config before restoring it, avoiding an unnecessary
-    # second Qwen download and the training-only FlashAttention requirement.
-    base_vlm = load(base_dir, hf_token="", load_for_training=False)
-    replacements = (
-        ("vision_backbone.dino_featurizer", "vision_backbone.featurizer"),
-        ("vision_backbone.siglip_featurizer", "vision_backbone.fused_featurizer"),
-        ("llm_backbone.llm", "language_model"),
-        ("projector.projector.0", "projector.fc1"),
-        ("projector.projector.2", "projector.fc2"),
-        ("projector.projector.4", "projector.fc3"),
-        ("gamma", "scale_factor"),
+    full_model = (checkpoint / "model.safetensors").is_file()
+    contract = checkpoint_contract(checkpoint)
+    processor = AutoProcessor.from_pretrained(
+        checkpoint if full_model else config_dir,
+        trust_remote_code=False, local_files_only=True,
     )
-    renamed = {}
-    for key, value in base_vlm.state_dict().items():
-        for old, new in replacements:
-            key = key.replace(old, new)
-        renamed[key] = value
+    if full_model:
+        print("Loading full fine-tuned VLA weights...", flush=True)
+        model, loading = AutoModelForVision2Seq.from_pretrained(
+            checkpoint, torch_dtype=dtype, attn_implementation="eager",
+            trust_remote_code=False, local_files_only=True,
+            low_cpu_mem_usage=True, output_loading_info=True,
+        )
+        if any(loading.get(key) for key in (
+            "missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs",
+        )):
+            raise RuntimeError(f"Full-model checkpoint does not match the VLA architecture: {loading}")
+        core = model
+        core.vision_backbone.set_num_images_in_input(2)
+    else:
+        print("Loading base vision-language model...", flush=True)
+        # The native checkpoint contains every base weight. Inference mode builds
+        # the Qwen module from config before restoring it, avoiding an unnecessary
+        # second Qwen download and the training-only FlashAttention requirement.
+        base_vlm = load(base_dir, hf_token="", load_for_training=False)
+        replacements = (
+            ("vision_backbone.dino_featurizer", "vision_backbone.featurizer"),
+            ("vision_backbone.siglip_featurizer", "vision_backbone.fused_featurizer"),
+            ("llm_backbone.llm", "language_model"),
+            ("projector.projector.0", "projector.fc1"),
+            ("projector.projector.2", "projector.fc2"),
+            ("projector.projector.4", "projector.fc3"),
+            ("gamma", "scale_factor"),
+        )
+        renamed = {}
+        for key, value in base_vlm.state_dict().items():
+            for old, new in replacements:
+                key = key.replace(old, new)
+            renamed[key] = value
 
-    config = AutoConfig.from_pretrained(config_dir)
-    model = AutoModelForVision2Seq.from_config(config, torch_dtype=dtype)
-    missing, unexpected = model.load_state_dict(renamed, strict=False)
-    if unexpected:
-        raise RuntimeError(f"Unexpected base-model tensors: {unexpected[:8]}")
-    # The HF wrapper owns action-query parameters that the native base VLM lacks.
-    if any("action_queries" not in key for key in missing):
-        print(f"Warning: base conversion left {len(missing)} tensors uninitialized", flush=True)
-    del renamed, base_vlm
-    gc.collect()
+        config = AutoConfig.from_pretrained(config_dir)
+        model = AutoModelForVision2Seq.from_config(config, torch_dtype=dtype)
+        missing, unexpected = model.load_state_dict(renamed, strict=False)
+        if unexpected:
+            raise RuntimeError(f"Unexpected base-model tensors: {unexpected[:8]}")
+        # The HF wrapper owns action-query parameters that the native base VLM lacks.
+        if any("action_queries" not in key for key in missing):
+            print(f"Warning: base conversion left {len(missing)} tensors uninitialized", flush=True)
+        del renamed, base_vlm
+        gc.collect()
 
-    model.vision_backbone.set_num_images_in_input(2)
-    model = PeftModel.from_pretrained(model, checkpoint / "lora_adapter", is_trainable=False)
-    extras = strip_ddp(torch.load(
-        checkpoint / "trainable_extras--latest_checkpoint.pt",
-        weights_only=True,
-        map_location="cpu",
-    ))
-    load_result = model.load_state_dict(extras, strict=False)
-    if load_result.unexpected_keys:
-        raise RuntimeError(f"Unexpected trained extras: {load_result.unexpected_keys}")
+        model.vision_backbone.set_num_images_in_input(2)
+        model = PeftModel.from_pretrained(model, checkpoint / "lora_adapter", is_trainable=False)
+        extras = strip_ddp(torch.load(
+            checkpoint / "trainable_extras--latest_checkpoint.pt",
+            weights_only=True,
+            map_location="cpu",
+        ))
+        load_result = model.load_state_dict(extras, strict=False)
+        if load_result.unexpected_keys:
+            raise RuntimeError(f"Unexpected trained extras: {load_result.unexpected_keys}")
 
-    core = model.base_model.model
+        core = model.base_model.model
     with (checkpoint / "dataset_statistics.json").open() as stream:
         core.norm_stats = json.load(stream)
     model.norm_stats = core.norm_stats
@@ -325,7 +413,9 @@ def load_policy(vla_dir: Path, base_dir: Path, checkpoint: Path, device_name: st
         proprio_projector=proprio_projector,
         device=device,
         dtype=dtype,
-        stats=core.norm_stats[UNNORM_KEY],
+        stats=core.norm_stats[contract.unnorm_key],
+        unnorm_key=contract.unnorm_key,
+        joint_control=contract.joint_control,
     )
 
 
@@ -334,7 +424,13 @@ def normalize_proprio(state: np.ndarray, stats: dict) -> np.ndarray:
     high = np.asarray(stats["q99"], dtype=np.float32)
     mask = np.asarray(stats.get("mask", np.ones_like(low, dtype=bool)), dtype=bool)
     normalized = np.where(mask, 2.0 * (state - low) / (high - low + 1e-8) - 1.0, state)
-    return np.clip(normalized, -1.0, 1.0).astype(np.float32)
+    normalized = np.where(mask, np.clip(normalized, -1.0, 1.0), state)
+    # RLDS maps unused dimensions (including the joint state's zero padding)
+    # back to zero after normalization, rather than leaving them at -1.
+    if "min" in stats and "max" in stats:
+        constant = np.asarray(stats["min"]) == np.asarray(stats["max"])
+        normalized = np.where(constant, 0.0, normalized)
+    return normalized.astype(np.float32)
 
 
 def prepare_image(image: np.ndarray):
@@ -384,7 +480,7 @@ def predict_actions(policy, shoulder: np.ndarray, wrist: np.ndarray,
     with torch.inference_mode():
         actions, _ = policy.model.predict_action(
             **primary,
-            unnorm_key=UNNORM_KEY,
+            unnorm_key=policy.unnorm_key,
             do_sample=False,
             proprio=proprio,
             proprio_projector=policy.proprio_projector,
@@ -406,7 +502,9 @@ def rotvec_quat(rotvec: np.ndarray) -> np.ndarray:
     return quat
 
 
-def current_state(sim) -> np.ndarray:
+def current_state(sim, joint_control: bool = False) -> np.ndarray:
+    if joint_control:
+        return np.r_[sim.q, 0.0, float(sim.data.ctrl[sim.grip_act])].astype(np.float32)
     from scipy.spatial.transform import Rotation
 
     pos, quat = sim.ee_pose()
@@ -414,6 +512,15 @@ def current_state(sim) -> np.ndarray:
     finger_opening = float(sim.data.ctrl[sim.grip_act])
     # POS_EULER is xyz + roll/pitch/yaw + one padding value + gripper.
     return np.concatenate((pos, euler, [0.0, finger_opening])).astype(np.float32)
+
+
+def apply_joint_action(sim, action: np.ndarray) -> None:
+    """Absolute joint endpoints in radians, plus per-finger opening in metres."""
+    action = np.asarray(action, dtype=np.float64)
+    if action.shape != (7,) or not np.isfinite(action).all():
+        raise RuntimeError(f"Policy returned invalid action: {action}")
+    sim.set_arm_ctrl(np.clip(action[:6], sim.arm_range[:, 0], sim.arm_range[:, 1]))
+    sim.set_gripper(float(np.clip(action[6], 0.0, 0.04) / 0.04))
 
 
 def display_frame(shoulder: np.ndarray, wrist: np.ndarray, step: int,
@@ -441,10 +548,15 @@ def rollout(args, policy) -> None:
     sys.path.insert(0, str(REPO_ROOT / "teleop"))
     from panthera_env import PantheraSim
     from render_vla_dataset import shoulder_camera, wrist_camera
+    from teleop.dataset_contract import PhysicsClock
 
     sim = PantheraSim(dynamics=args.dynamics)
 
     def reset_scene(seed: int) -> tuple[np.ndarray, np.ndarray]:
+        if policy.joint_control and not args.fixed_scene:
+            from tools.evaluate_pi05 import reset_scene as reset_ik_scene
+            reset_ik_scene(sim, seed, "matched")
+            return sim.ee_pose()
         sim.reset(
             randomize=not args.fixed_scene,
             rng=np.random.default_rng(seed),
@@ -484,10 +596,10 @@ def rollout(args, policy) -> None:
         if not writer.isOpened():
             raise SystemExit(f"Could not open video output {args.video}")
 
-    physics_steps = max(1, round((1.0 / args.hz) / sim.dt))
+    physics_clock = PhysicsClock(args.hz, sim.dt)
     action_queue: list[np.ndarray] = []
     last_action = None
-    # Actions are frame-to-frame pose deltas.  Integrate them into a commanded
+    # Legacy actions are pose deltas. Integrate them into a commanded
     # pose rather than repeatedly applying them to the measured pose: the
     # latter turns gravity/servo tracking error into a new target every tick
     # and makes even an all-zero action sequence drift downward.
@@ -510,7 +622,7 @@ def rollout(args, policy) -> None:
             if not action_queue:
                 started = time.perf_counter()
                 chunk = predict_actions(
-                    policy, images[0], images[1], current_state(sim), args.instruction
+                    policy, images[0], images[1], current_state(sim, policy.joint_control), args.instruction
                 )
                 action_queue.extend(chunk[:args.open_loop])
                 print(
@@ -522,19 +634,23 @@ def rollout(args, policy) -> None:
             action = np.asarray(action_queue.pop(0), dtype=np.float64)
             if action.shape != (7,) or not np.isfinite(action).all():
                 raise RuntimeError(f"Policy returned invalid action: {action}")
-            action[:6] *= args.action_scale
-            target_pos = target_pos + action[:3]
-            delta_quat = rotvec_quat(action[3:6])
-            next_target_quat = np.zeros(4)
-            mujoco.mju_mulQuat(next_target_quat, delta_quat, target_quat)
-            mujoco.mju_normalize4(next_target_quat)
-            target_quat = next_target_quat
-            q_target, pos_error, rot_error = sim.ik(
-                target_pos, target_quat, q_init=sim.q, max_joint_step=args.max_joint_step
-            )
-            sim.set_arm_ctrl(q_target)
-            sim.set_gripper(float(action[6]))
-            sim.step(physics_steps)
+            if policy.joint_control:
+                apply_joint_action(sim, action)
+                pos_error = rot_error = 0.0
+            else:
+                action[:6] *= args.action_scale
+                target_pos = target_pos + action[:3]
+                delta_quat = rotvec_quat(action[3:6])
+                next_target_quat = np.zeros(4)
+                mujoco.mju_mulQuat(next_target_quat, delta_quat, target_quat)
+                mujoco.mju_normalize4(next_target_quat)
+                target_quat = next_target_quat
+                q_target, pos_error, rot_error = sim.ik(
+                    target_pos, target_quat, q_init=sim.q, max_joint_step=args.max_joint_step
+                )
+                sim.set_arm_ctrl(q_target)
+                sim.set_gripper(float(action[6]))
+            sim.step(physics_clock.next_steps())
             last_action = action
 
             frame = display_frame(images[0], images[1], step, args.instruction, last_action)
@@ -554,7 +670,8 @@ def rollout(args, policy) -> None:
                     time.sleep(remaining)
             print(
                 f"step {step:04d}  xyz={sim.ee_pos().round(3)}  grip={action[6]:.2f}  "
-                f"ik=({pos_error * 1000:.1f}mm, {math.degrees(rot_error):.1f}deg)",
+                + ("joint targets" if policy.joint_control else
+                 f"ik=({pos_error * 1000:.1f}mm, {math.degrees(rot_error):.1f}deg)"),
                 flush=True,
             )
             if key == ord("q"):
@@ -563,6 +680,7 @@ def rollout(args, policy) -> None:
                 reset_count += 1
                 reset_seed = args.seed + reset_count
                 target_pos, target_quat = reset_scene(reset_seed)
+                physics_clock = PhysicsClock(args.hz, sim.dt)
                 action_queue.clear()
                 last_action = None
                 step = 0
@@ -587,6 +705,7 @@ def parse_args() -> argparse.Namespace:
         default=Path(os.environ.get("VLA_ADAPTER_DIR", default_vla_dir())),
         help="pinned VLA-Adapter source checkout",
     )
+    parser.add_argument("--model-weights", type=Path, help="separate model safetensors accompanying a split Drive ZIP")
     parser.add_argument("--base-model", type=Path, help="already-downloaded base model directory")
     parser.add_argument("--cache-dir", type=Path,
                         default=Path.home() / ".cache" / "robot-arm-learning")
@@ -596,7 +715,7 @@ def parse_args() -> argparse.Namespace:
         help="control steps before stopping; 0 (default) runs until q",
     )
     parser.add_argument("--dynamics", choices=("contact-v2", "weld-v1"), default="contact-v2")
-    parser.add_argument("--hz", type=float, default=10.0)
+    parser.add_argument("--hz", type=float, help="control rate (default: checkpoint rate; IK models require 30 Hz)")
     parser.add_argument("--open-loop", type=int, default=8, choices=range(1, 9), metavar="1..8")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--fixed-scene", action="store_true", help="use the XML cube layout")
@@ -611,7 +730,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mujoco-gl", default="egl", choices=("egl", "glfw", "osmesa"))
     args = parser.parse_args()
-    if args.steps < 0 or args.hz <= 0 or args.action_scale <= 0:
+    if args.steps < 0 or (args.hz is not None and (not np.isfinite(args.hz) or args.hz <= 0)) or args.action_scale <= 0:
         parser.error("--steps must be nonnegative; --hz and --action-scale must be positive")
     if args.no_display and args.steps == 0:
         parser.error("--no-display requires a positive --steps value")
@@ -626,14 +745,23 @@ def main() -> None:
     print(f"Checkpoint artifact: {checkpoint_source}", flush=True)
     vla_dir = ensure_vla_checkout(args.vla_dir)
     require_ml_dependencies(vla_dir)
-    checkpoint = materialize_checkpoint(checkpoint_source, args.cache_dir)
-    local_base = vla_dir / "pretrained_models" / "prism-qwen25-extra-dinosiglip-224px-0_5b"
-    base_override = args.base_model
-    if base_override is None and (local_base / "config.json").is_file() \
-            and (local_base / BASE_CHECKPOINT).is_file():
-        base_override = local_base
-        print(f"Using existing base model: {local_base}", flush=True)
-    base_dir = ensure_base_model(args.cache_dir, base_override)
+    checkpoint = materialize_checkpoint(checkpoint_source, args.cache_dir, args.model_weights)
+    contract = checkpoint_contract(checkpoint)
+    if args.hz is not None and contract.joint_control and not np.isclose(args.hz, contract.hz):
+        raise SystemExit(f"Checkpoint expects {contract.hz:g} Hz, not {args.hz:g} Hz")
+    args.hz = contract.hz if args.hz is None else args.hz
+    if contract.joint_control and args.action_scale != 1.0:
+        raise SystemExit("--action-scale must be 1 for absolute joint targets")
+    print(f"Checkpoint ready: {checkpoint} ({contract.unnorm_key}, {args.hz:g} Hz)", flush=True)
+    base_dir = None
+    if not (checkpoint / "model.safetensors").is_file():
+        local_base = vla_dir / "pretrained_models" / "prism-qwen25-extra-dinosiglip-224px-0_5b"
+        base_override = args.base_model
+        if base_override is None and (local_base / "config.json").is_file() \
+                and (local_base / BASE_CHECKPOINT).is_file():
+            base_override = local_base
+            print(f"Using existing base model: {local_base}", flush=True)
+        base_dir = ensure_base_model(args.cache_dir, base_override)
     policy = load_policy(vla_dir, base_dir, checkpoint, args.device)
     rollout(args, policy)
 
