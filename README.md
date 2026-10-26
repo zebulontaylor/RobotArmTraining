@@ -678,3 +678,50 @@ uses privileged object/grasp geometry; it is a simulation demonstrator, not a
 camera-only policy or hardware controller.
 
 See [the session review and rollout measurements](reports/bimanual_actuator_ik.md).
+
+## Restyling the real recordings
+
+[`tools/augment_real_dataset.py`](tools/augment_real_dataset.py) adds visual
+variety to the real demonstrations without touching their motion: the table and
+room are repainted, while the arms, grippers, carrier, gear, pin and the
+operator's hands are copied back from the original frames. States, actions,
+velocities and efforts are copied unchanged, and the output keeps the real
+dataset's format (14-D state, 20 Hz, `overhead`, `wrist_port2`, `wrist_port3`).
+
+Per frame, Depth Anything V2 estimates depth; the table is modelled as a smooth
+surface under the wood-coloured pixels, and everything that rises above it is
+kept. The rest is first filled with a random colour or texture, then repainted
+by the Stable Diffusion 1.5 depth/edge ControlNet restyle of
+[`tools/sim2real_augment.py`](tools/sim2real_augment.py) (LCM, 4 steps). Each
+restyled episode keeps its depth and masks so a second, CPU-only pass can add
+lighting changes (exposure, colour cast, directional shading, soft and cast
+shadows) without diffusion.
+
+```bash
+# Look first: original | restyle input | restyled | restyled + relit.
+python tools/augment_real_dataset.py preview --root data/real_gear --episodes 0 101
+
+# Two restyled copies per demonstration (one realistic look, one wild), no lighting yet.
+python tools/augment_real_dataset.py export --root data/real_gear \
+  --output outputs/real_aug/lerobot --work outputs/real_aug/rendered \
+  --no-originals --copies 2 --steps 4 --size 384 --guidance 1.0 --workers 6
+
+# Lighting variants of every episode (CPU; reuses the stored depth and masks).
+python tools/augment_real_dataset.py relight --source outputs/real_aug/lerobot \
+  --output outputs/real_aug/lerobot_relit --work outputs/real_aug/relit
+```
+
+Rendering resumes from its `--work` folder and refuses to mix settings. Several
+GPU machines can share one `--work` folder on a network volume: run the second
+with `--reverse --render-only`. `--write-finished` writes a dataset from the
+episodes finished so far without disturbing a running render. On one RTX PRO
+6000 (6 workers) the restyle runs at about 16 episodes an hour.
+
+Each demonstration appears several times (restyled, relit), so validation must
+hold out whole demonstrations; `meta/provenance.json` maps every episode to its
+source. Known limits: each frame is repainted on its own, so backgrounds shimmer
+from frame to frame (most visible on the fixed overhead camera); a faint halo
+can remain where the kept arms meet the new background; a few small patches of
+shadowed table can survive next to the fingers.
+
+Needs `diffusers`, `transformers`, `accelerate`, `peft` and `lerobot==0.4.4`.
