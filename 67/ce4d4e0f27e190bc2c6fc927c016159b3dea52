@@ -1,0 +1,75 @@
+sim/pin_insertion_env.py
+  s_be80e60b986767::t_4a7c1362381822 1-466
+  s_e36e7c790244f5::t_494d1d5d74cf94 467-489
+requirements-actuator.txt
+  s_e36e7c790244f5::t_0e16d7cd05acd5 3
+sim/pin_regrasp_backend.py
+  s_e6eb228c5d036e::t_4c98cb69bc300b 228
+  s_e36e7c790244f5::t_1adf85a585427a 229-347
+tools/render_pin_regrasp_video.py
+  s_e36e7c790244f5::t_b18b40561ce8cd 1,61,63-67,69-71,73-74,122-132,137-140,142-147,151
+collection/pin_insertion.py
+  s_e36e7c790244f5::t_67b47c15e40ba8 1-280
+collection/pin_regrasp.py
+  s_e36e7c790244f5::t_9b64f733cfded8 102-141,155-157,159,163,220-221
+sim/actuator/pin_regrasp.md
+  s_e36e7c790244f5::t_184850642740ee 101-102,131-255
+sim/actuator/pin_reset_profile.json
+  s_5a1279c741fe85::t_1629cfc5a8bb16 1-11724
+tests/test_collect_pin_regrasps_cli.py
+  s_e36e7c790244f5::t_2ee8139d3acbd1 100-137
+tests/test_pin_insertion_collection.py
+  s_e36e7c790244f5::t_65354d7bfb0016 1-117
+tools/collect_pin_regrasps.py
+  s_e36e7c790244f5::t_cc2d8274f75fd3 1,35-36,39-46,48-49,68,74,78,80-84,92-94,103-106,108-110,113-119,121-123,144
+tests/test_pin_insertion_env.py
+  s_e59366b9da3e8d::t_8ef703317d0c38 1-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "67ce4d4e0f27e190bc2c6fc927c016159b3dea52",
+  "prompts": {},
+  "sessions": {
+    "s_5a1279c741fe85": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a149dc-423a-7df2-a7c7-8847554be327",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    },
+    "s_be80e60b986767": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a17f06-c0ef-77c1-beea-d84b0a92a248",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    },
+    "s_e36e7c790244f5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1931f-fbff-7570-ac0b-ed76ebbc4b7f",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    },
+    "s_e59366b9da3e8d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a14a19-3e51-7860-82bf-56da96831db5",
+        "model": "unknown"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    },
+    "s_e6eb228c5d036e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a192b2-cc78-7022-b8ce-29f24d60cbf1",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Zeb Taylor <zceboys@gmail.com>"
+    }
+  }
+}
