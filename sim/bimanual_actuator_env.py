@@ -14,13 +14,21 @@ import numpy as np
 
 from sim.actuator_env import ActuatorSim, ASSETS, TABLE_Z
 from sim.panthera_env import PantheraSim, ARM_JOINTS
+from sim.real_setup import DEFAULT_SETUP, apply_photo_setup
 
 CAMERAS = ('overhead', 'left_wrist', 'right_wrist')
 STATE_NAMES = tuple(f'{side}.{name}' for side in ('left', 'right')
                     for name in (*ARM_JOINTS, 'gripper_open_m'))
 
 
-def build_bimanual_scene():
+def build_bimanual_scene(layout='opposed', setup_profile=None):
+    if layout not in ('opposed', 'side_by_side'):
+        raise ValueError(f'Unknown bimanual layout: {layout}')
+    setup_profile = setup_profile or (DEFAULT_SETUP if layout == 'side_by_side' else 'legacy')
+    if setup_profile not in ('legacy', DEFAULT_SETUP):
+        raise ValueError(f'Unknown setup profile: {setup_profile}')
+    if setup_profile != 'legacy' and layout != 'side_by_side':
+        raise ValueError('The photo setup requires the side_by_side layout')
     # Read the checked-in single-arm asset; never rewrite legacy scene files.
     root = ET.parse(ASSETS/'scene_pins.xml').getroot()
     root.set('model', 'panthera_bimanual_place_push')
@@ -58,6 +66,44 @@ def build_bimanual_scene():
     overhead = world.find("camera[@name='overhead']")
     overhead.set('pos', '.40 -.40 .65')
     overhead.set('xyaxes', '1 0 0 0 .8 .6')
+    if layout == 'side_by_side':
+        root.set('model', 'panthera_side_by_side_pin_insertion')
+        # Both bases stand on the same table edge, facing the shared workspace.
+        base.set('pos', f'0 -.29 {TABLE_Z}')
+        base.set('quat', '1 0 0 0')
+        index = list(world).index(robot)
+        world.remove(robot)
+        left = ET.Element('body', name='left_base', pos=f'0 .29 {TABLE_Z}')
+        for geom in list(world.findall('geom')):
+            if geom.get('class') in ('visual', 'collision'):
+                world.remove(geom)
+                left.append(geom)
+        left.append(robot)
+        world.insert(index, left)
+        table = world.find("geom[@name='table_top']")
+        table.set('pos', '.23 0 .025')
+        table.set('size', '.45 .55 .025')
+        tower = ET.SubElement(world, 'body', name='center_tower', pos=f'-.04 0 {TABLE_Z}')
+        for name, pos, size in (
+                ('tower_foot', '0 0 .01', '.075 .075 .01'),
+                ('tower_column', '0 0 .36', '.025 .025 .35'),
+                ('tower_head', '.015 0 .73', '.045 .055 .035')):
+            ET.SubElement(tower, 'geom', name=name, type='box', pos=pos, size=size,
+                          rgba='.16 .19 .22 1', contype='1', conaffinity='3')
+        ET.SubElement(tower, 'geom', name='tower_lens', type='cylinder',
+                      pos='.064 0 .73', size='.012 .006', quat='.707107 0 .707107 0',
+                      rgba='.04 .07 .10 1', contype='0', conaffinity='0')
+        camera_position = np.array([1.20, .10, .85])
+        backward = camera_position - [.16, 0, .38]
+        backward /= np.linalg.norm(backward)
+        right = np.cross([0, 0, 1.], backward)
+        right /= np.linalg.norm(right)
+        up = np.cross(backward, right)
+        overhead.set('pos', ' '.join(map(str, camera_position)))
+        overhead.set('xyaxes', ' '.join(map(str, np.r_[right, up])))
+        overhead.set('fovy', '55')
+        root.find('statistic').set('center', '.18 0 .35')
+        root.find('statistic').set('extent', '.85')
     # Exactly one overhead camera plus a camera attached to each wrist.
     for section in ('actuator', 'equality', 'contact'):
         parent = root.find(section)
@@ -67,6 +113,8 @@ def build_bimanual_scene():
                 if key in ('name', 'joint', 'joint1', 'joint2', 'body1', 'body2'):
                     clone.set(key, 'right_base' if value == 'world' else 'right_'+value)
             parent.append(clone)
+    if layout == 'side_by_side':
+        root.find("contact/exclude[@body1='world']").set('body1', 'left_base')
     # Keyframe tails would otherwise initialize the second arm at zero.
     root.remove(root.find('keyframe'))
     home = [0., 1.2, 1.4, 0., 0., 0., .04, -.04]
@@ -78,8 +126,12 @@ def build_bimanual_scene():
     ET.SubElement(ET.SubElement(root, 'keyframe'), 'key', name='home',
                   qpos=' '.join(map(str, home+free_poses+home)),
                   ctrl=' '.join(map(str, home[:7]+home[:7])))
+    if setup_profile == DEFAULT_SETUP:
+        apply_photo_setup(root)
     ET.indent(root)
-    path = ASSETS/'scene_bimanual.xml'
+    path = ASSETS / ('scene_bimanual.xml' if layout == 'opposed'
+                     else ('scene_bimanual_side_by_side.xml' if setup_profile == 'legacy'
+                           else f'scene_bimanual_{setup_profile}.xml'))
     # Independent seed runs may construct the same immutable scene at once.
     with tempfile.NamedTemporaryFile(mode='w', dir=ASSETS, suffix='.xml', delete=False) as f:
         temporary = f.name
@@ -124,9 +176,11 @@ class BimanualActuatorSim(ActuatorSim):
     cameras = CAMERAS
     state_names = STATE_NAMES
 
-    def __init__(self, seed=0, xy_jitter=.002, yaw_jitter_deg=2.):
+    def __init__(self, seed=0, xy_jitter=.002, yaw_jitter_deg=2., *, layout='opposed', setup_profile=None):
+        self.layout = layout
+        self.setup_profile = setup_profile or (DEFAULT_SETUP if layout == 'side_by_side' else 'legacy')
         super().__init__(seed, xy_jitter, yaw_jitter_deg, with_pins=True,
-                         scene=build_bimanual_scene())
+                         scene=build_bimanual_scene(layout, self.setup_profile))
         self.arms = {side: Arm(self, side) for side in ('left', 'right')}
         self.stations = dict(self.stations, large_carrier=(.43, .12), gear_3=(.28, -.12))
         self.reset()

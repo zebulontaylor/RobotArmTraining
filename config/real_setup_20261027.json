@@ -1,0 +1,91 @@
+{
+  "profile": "photo_20261027",
+  "units": "metres and degrees",
+  "purpose": "Approximate visual setup from supplied hardware photographs; not camera calibration or manufacturing dimensions",
+  "tower": {
+    "column_top_m": 0.4,
+    "depth_m": 0.055,
+    "width_m": 0.1,
+    "optical_center_local_m": [
+      0.055,
+      0.0,
+      0.37
+    ],
+    "pitch_down_deg": 45.0,
+    "fovy_deg": 80.0
+  },
+  "wrist_cameras": {
+    "parent_frame": "each arm's link6",
+    "optical_center_link6_m": [
+      0.045,
+      0.0,
+      0.1
+    ],
+    "pitch_down_deg": 20.0,
+    "forward_axis": "+X with a downward component along -Z",
+    "fovy_deg": 70.0
+  },
+  "retained_geometry": {
+    "base_y_m": [
+      0.29,
+      -0.29
+    ],
+    "reason": "Front and oblique photographs are consistent with the existing approximate base spacing; no measured replacement is available",
+    "arm_frames_inertias_and_part_contacts": "unchanged",
+    "tower_contacts": "Existing static foot, column and head shapes resized to the estimated envelope"
+  },
+  "appearance": {
+    "tower_and_mounts": "black printed housings",
+    "robot_links": "Silver base and link meshes, black gripper_center; merged link meshes do not separate motor housings",
+    "fingers": "Off-white finger mesh with black zero-mass pad visuals; collision pads unchanged",
+    "controller_boxes": "approximate black visual boxes between tower and bases, without contacts or mass",
+    "table": "Deterministic procedural honey butcher-block texture; visual reconstruction rather than a photograph texture"
+  },
+  "evidence": [
+    {
+      "file": "PXL_20261027_201859718.jpg",
+      "supports": "Tape alongside tower: optical center approximately 0.37 m and column top approximately 0.40 m above tabletop",
+      "kind": "photograph estimate",
+      "sha256": "38da20a29444b94a76c64ddd89a9a1b47ad400a0be9e290c2b92caf9c65a647d"
+    },
+    {
+      "file": "PXL_20261027_201916819.MP.jpg",
+      "supports": "Tower camera board on a sloping bracket, approximately 45 degrees downward",
+      "kind": "photograph estimate",
+      "sha256": "f8e73cd5dd20dd40dc03980ad398c9c4a372529a837799fa8e088451ae0c4af7"
+    },
+    {
+      "file": "PXL_20261027_201835299.MP.jpg",
+      "supports": "Overall tabletop, black tower, paired robots and controller boxes; existing base spacing retained",
+      "kind": "visual reference",
+      "sha256": "8b7f58d20c18f1a57915725b2cc1767bed43e20586a25af304778e3dbefb9fb9"
+    },
+    {
+      "file": "PXL_20261027_201849491.MP.jpg",
+      "supports": "Oblique setup and raised wrist camera mounts",
+      "kind": "visual reference",
+      "sha256": "673fc10f1afb0cb27be31518935a26e999e8e0a0fef9d28679504ed3c83d1589"
+    },
+    {
+      "file": "PXL_20261027_201923017.MP.jpg",
+      "supports": "Raised black wrist camera bracket, off-white fingers, dark pads and silver wrist actuator",
+      "kind": "visual reference",
+      "sha256": "b646d0f2e5634ddfa69bd1ae1fd41483b3d3d9e3c02f4613347db074cabb30db"
+    }
+  ],
+  "uncertainties": [
+    "Tower width, depth, board dimensions, mount offsets, controller dimensions and wrist mount height are approximate visual dimensions",
+    "The tape photograph has perspective and does not establish millimetre precision",
+    "Camera fields of view are retained nominal values; intrinsics and lens distortion are unmeasured",
+    "Camera-to-arm assignment and camera extrinsics require measured calibration before real metric triangulation"
+  ],
+  "texture": {
+    "file": "sim/actuator/textures/bench_photo_20261027.png",
+    "seed": 20261027,
+    "size_px": [
+      512,
+      512
+    ],
+    "sha256": "b9c4a856ebd3fb5beba988c3c991b78303a01add7bf0dc325296aa296d46e2e0"
+  }
+}

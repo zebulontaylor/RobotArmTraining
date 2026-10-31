@@ -41,3 +41,7 @@ MUJOCO_LOG.TXT
 # External checkout used by the VLA data pipeline
 /VLA-Adapter/
 /outputs/
+
+# Rebuilt from the bimanual scene generator at environment startup.
+/sim/actuator/scene_bimanual_side_by_side.xml
+/sim/actuator/scene_bimanual_photo_*.xml
