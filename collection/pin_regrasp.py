@@ -99,6 +99,46 @@ def sample_retreat(rng, config, reference=None):
     return direction * rng.uniform(config.retreat_min_m, config.retreat_max_m)
 
 
+class NumericTrajectory:
+    """Record executed transitions with one more observation than action.
+
+    Observation schemas stay fixed within an attempt. Labels refer to the
+    action just executed; unsuccessful attempts never enable training labels.
+    """
+
+    def __init__(self, phase_names):
+        self.phase_names = tuple(phase_names)
+        self.observations, self.actions, self.phases = [], [], []
+
+    def observe(self, backend):
+        observation = {k: np.array(v, copy=True) for k, v in backend.observe().items()}
+        if not observation or any(v.dtype.kind not in 'biuf' or not np.isfinite(v).all()
+                                  for v in observation.values()):
+            raise RuntimeError('Backend returned non-numeric or non-finite observation')
+        if self.observations and (observation.keys() != self.observations[0].keys() or
+                any(v.shape != self.observations[0][k].shape for k, v in observation.items())):
+            raise RuntimeError('Backend observation schema changed within episode')
+        self.observations.append(observation)
+        return observation
+
+    def record(self, backend, action, phase):
+        phase_index = self.phase_names.index(phase)
+        self.observe(backend)
+        self.actions.append(np.array(action, dtype=float, copy=True))
+        self.phases.append(phase_index)
+
+    def arrays(self, action_width, training_phases, success):
+        observations = self.observations
+        arrays = {f'obs_{key}': np.stack([o[key] for o in observations])
+                  for key in observations[0]} if observations else {}
+        arrays['actions'] = np.asarray(self.actions, dtype=np.float64).reshape(-1, action_width)
+        arrays['phases'] = np.asarray(self.phases, dtype=np.int8)
+        arrays['phase_names'] = np.asarray(self.phase_names)
+        indices = [self.phase_names.index(name) for name in training_phases]
+        arrays['training_mask'] = np.isin(arrays['phases'], indices) & bool(success)
+        return arrays
+
+
 def collect_episode(backend: PinBackend, seed: int, config=CollectionConfig()):
     """Return numeric trajectory arrays and a success/failure record.
 
@@ -110,25 +150,17 @@ def collect_episode(backend: PinBackend, seed: int, config=CollectionConfig()):
     """
     if not np.isfinite(backend.hz) or backend.hz <= 0:
         raise ValueError("Backend control frequency must be finite and positive")
-    observations, actions, phases = [], [], []
     result = dict(seed=int(seed), success=False, failure=None, reset=None)
 
+    trajectory = NumericTrajectory(PHASE_NAMES)
+    observations = trajectory.observations
+
     def observe():
-        observation = {k: np.array(v, copy=True) for k, v in backend.observe().items()}
-        if not observation or any(v.dtype.kind not in "biuf" or not np.isfinite(v).all()
-                                  for v in observation.values()):
-            raise RuntimeError("Backend returned non-numeric or non-finite observation")
-        if observations and (observation.keys() != observations[0].keys() or
-                             any(v.shape != observations[0][k].shape for k, v in observation.items())):
-            raise RuntimeError("Backend observation schema changed within episode")
-        observations.append(observation)
-        return observation
+        return trajectory.observe(backend)
 
     def step(position, rotation, opening, phase):
         backend.command(position.copy(), rotation.copy(), float(opening))
-        observe()
-        actions.append(np.r_[position, rotation.reshape(-1), opening])
-        phases.append(PHASE_NAMES.index(phase))
+        trajectory.record(backend, np.r_[position, rotation.reshape(-1), opening], phase)
 
     def hold(position, rotation, opening, seconds, phase):
         for _ in range(max(1, int(np.ceil(seconds*backend.hz)))):
@@ -185,12 +217,7 @@ def collect_episode(backend: PinBackend, seed: int, config=CollectionConfig()):
     finally:
         backend.stop()
 
-    arrays = {f'obs_{key}': np.stack([o[key] for o in observations])
-              for key in observations[0]} if observations else {}
-    arrays['actions'] = np.asarray(actions, dtype=np.float64).reshape(-1, 13)
-    arrays['phases'] = np.asarray(phases, dtype=np.int8)
-    arrays['phase_names'] = np.asarray(PHASE_NAMES)
-    arrays['training_mask'] = (np.isin(arrays['phases'], [2, 3]) & result['success'])
-    result['steps'] = len(actions)
+    arrays = trajectory.arrays(13, ('return', 'close'), result['success'])
+    result['steps'] = len(arrays['actions'])
     result['training_steps'] = int(arrays['training_mask'].sum())
     return arrays, result

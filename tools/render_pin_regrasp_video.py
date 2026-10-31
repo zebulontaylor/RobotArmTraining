@@ -1,4 +1,4 @@
-"""Render recorded regrasp camera observations at their recorded playback speed.
+"""Render recorded pin collection camera observations at their recorded playback speed.
 
 Run from the repository root, for example::
 
@@ -58,14 +58,20 @@ def panel(canvas, image, rect, title):
     label(canvas, title, (x+12, y+22), 0.52, ACCENT)
 
 
-def render_frame(cameras, index, elapsed, duration, phase, seed, scene, outcome=None):
+def render_frame(cameras, index, elapsed, duration, phase, seed, scene, outcome=None, task='regrasp'):
     canvas = np.full((HEIGHT, WIDTH, 3), BACKGROUND, np.uint8)
-    label(canvas, 'PIN REGRASP / TWO-ARM SIMULATION', (24, 34), 0.75)
+    title = {'pickup_alignment': 'PIN ALIGNMENT / PICKUP APPROACH',
+             'alignment': 'PIN ALIGNMENT / RETREAT AND RETURN',
+             'insertion': 'PIN ALIGNMENT / INSERTION',
+             'shallow_insertion': 'PIN ALIGNMENT / SHALLOW ENTRY'}.get(task, 'PIN REGRASP')
+    label(canvas, title + ' / TWO-ARM SIMULATION', (24, 34), 0.75)
     label(canvas, f'{scene}  |  seed {seed}', (24, 62), 0.53, ACCENT)
-    main = next((key for key in ('overview', 'overhead') if key in cameras), next(iter(cameras)))
-    wrists = [key for key in ('left_wrist', 'right_wrist') if key in cameras and key != main]
+    main = next((key for key in ('carrier_detail', 'overview', 'overhead') if key in cameras), next(iter(cameras)))
+    side_views = ('overview', 'right_wrist') if main == 'carrier_detail' else ('left_wrist', 'right_wrist')
+    wrists = [key for key in side_views if key in cameras and key != main]
     if wrists:
-        panel(canvas, cameras[main][index], (24, 82, 832, 560), main.replace('_', ' ').upper())
+        main_title = 'CARRIER / FIXED CAMERA' if main == 'carrier_detail' else main.replace('_', ' ').upper()
+        panel(canvas, cameras[main][index], (24, 82, 832, 560), main_title)
         for slot, key in enumerate(wrists):
             panel(canvas, cameras[key][index], (872, 82+slot*288, 384, 272), key.replace('_', ' ').upper())
     else:
@@ -113,18 +119,36 @@ def render(input_dir, output, limit=3, fps=30, overwrite=False):
                             raise ValueError(f'{path}: expected T phases and T+1 observations')
                         scene = str((result.get('reset') or {}).get('scene', 'Real-data approach | left: pin | right: hold carrier'))
                         seed = result.get('seed', path.stem)
-                        title = render_frame(cameras, 0, 0, times[-1], 'episode start', seed, scene)
+                        task = result.get('task', 'regrasp')
+                        if task == 'alignment':
+                            offset = (result.get('reset') or {}).get('carrier_offset_m')
+                            if offset is not None and len(offset) >= 2:
+                                scene = (f'Shared XY offset: {1000*offset[0]:+.1f}, '
+                                         f'{1000*offset[1]:+.1f} mm | fixed grippers')
+                        if task == 'alignment' and result.get('approach_style') == 'pickup_toward_base_40deg':
+                            task = 'pickup_alignment'
+                        if task == 'insertion' and result.get('insertion_mode') == 'shallow_cycle':
+                            task = 'shallow_insertion'
+                        title = render_frame(cameras, 0, 0, times[-1], 'episode start', seed, scene, task=task)
                         for _ in range(fps):
                             process.stdin.write(title.tobytes())
                         for index in indices:
                             phase = str(names[int(phases[max(0, index-1)])]) if len(phases) else 'reset'
-                            frame = render_frame(cameras, index, times[index], times[-1], phase, seed, scene)
+                            if len(phases) and 'cycle_ids' in data:
+                                cycle = int(data['cycle_ids'][max(0, index-1)]) + 1
+                                phase += f' | cycle {cycle}'
+                            frame = render_frame(cameras, index, times[index], times[-1], phase, seed, scene, task=task)
                             process.stdin.write(frame.tobytes())
-                        outcome = ('VERIFIED: sustained physical grasp' if result.get('success') is True
+                        verified = {'pickup_alignment': 'VERIFIED: alignment above carrier',
+                                    'alignment': 'VERIFIED: alignment above carrier',
+                                    'insertion': 'VERIFIED: sustained insertion',
+                                    'shallow_insertion': 'VERIFIED: repeated shallow entry'}.get(
+                                        task, 'VERIFIED: sustained physical grasp')
+                        outcome = (verified if result.get('success') is True
                                    else 'FAILED: see episode JSON' if result.get('success') is False
                                    else 'OUTCOME NOT RECORDED')
                         terminal = render_frame(cameras, len(times)-1, times[-1], times[-1],
-                                                phase, seed, scene, outcome)
+                                                phase, seed, scene, outcome, task=task)
                         for _ in range(fps):
                             process.stdin.write(terminal.tobytes())
                         count = len(indices)+2*fps

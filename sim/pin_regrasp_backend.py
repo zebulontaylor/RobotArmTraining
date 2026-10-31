@@ -225,3 +225,123 @@ class MujocoPinBackend:
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+
+
+class MujocoPinInsertionBackend(MujocoPinBackend):
+    """Reuse regrasp cameras and contact observations for held-pin alignment.
+
+    The insertion environment owns both-arm incremental servo control and
+    contact limits. The collector checks tip clearance and alignment above the upper mouth.
+    Reset starts with pin 2 held above the carrier; it does not collect the
+    preceding tabletop pickup.
+    """
+
+    def __init__(self, hz=20, image_size=128, images=True, max_steps=1400, scene_xy_m=.03):
+        from sim.pin_insertion_env import BimanualPinInsertionEnv, PinInsertionConfig
+        if hz != 20 or image_size < 1:
+            raise ValueError('Alignment control runs at 20 Hz; image_size must be positive')
+        self.env = BimanualPinInsertionEnv(PinInsertionConfig(
+            max_steps=max_steps, carrier_xy_m=scene_xy_m, start_xy_m=0.,
+            start_height_m=(.0012, .0012),
+            pin_grip_translation_m=0., pin_grip_rotation_deg=0.,
+            holder_translation_m=0., holder_rotation_deg=0.,
+            holder_workspace_m=.03, carrier_travel_limit_m=.03,
+            carrier_on_table=True, holder_grasp_height_m=.011))
+        for sample in self.env.profile['samples']:
+            sample['left']['rotation_base'] = (rotation_exp(np.array([0., 0., np.deg2rad(-12)]))
+                                                  @ np.asarray(sample['left']['rotation_base'])).tolist()
+        self.sim = self.env.sim
+        self.arm, self.right = self.sim.arms.values()
+        self._pin, self._carrier = self.env.pin_id, self.env.carrier_id
+        self.hz, self.images, self.image_size = hz, images, int(image_size)
+        self._renderer = None
+
+    def reset(self, seed):
+        _, info = self.env.reset(seed=seed)
+        self._detail_lookat = self.sim.data.xpos[self._carrier].copy() + [0, 0, .01]
+        return dict(info['reset'], seed=int(seed), control_hz=self.hz,
+                    layout='side_by_side', right_task='hold_large_carrier',
+                    pin_name=self.env.pin_name, task='alignment',
+                    shared_scene_offset_m=info['reset']['carrier_offset_m'],
+                    pin_independent_xy_jitter_m=0.,
+                    holder_grip_source='recorded rotation retargeted relative to carrier',
+                    wrist_clearance_yaw_deg=-12, reset_tip_clearance_target_m=.0012,
+                    carrier_detail_camera=dict(fixed_world=True, lookat_world_m=self._detail_lookat.tolist(),
+                                               distance_m=.18, azimuth_deg=180., elevation_deg=-65.))
+
+    def mouth_position(self):
+        parts = self.sim.manifest['parts']
+        offset = (np.asarray(parts[self.env.pin_name]['assembled_origin'])
+                  - parts['large_carrier']['assembled_origin'])
+        rotation = self.sim.data.xmat[self._carrier].reshape(3, 3)
+        return self.sim.data.xpos[self._carrier] + rotation @ np.r_[offset[:2], .01725]
+
+    def entry_status(self):
+        """Measure shaft intersection and signed tip depth at the upper mouth."""
+        s = self.sim
+        rotation = s.data.xmat[self._carrier].reshape(3, 3)
+        delta = rotation.T @ (s.data.xpos[self._pin]-self.mouth_position())
+        axis = rotation.T @ s.data.xmat[self._pin].reshape(3, 3)[:, 2]
+        if axis[2] <= 0:
+            raise RuntimeError('Pin axis points away from the carrier bore')
+        center = delta[:2] - delta[2]*axis[:2]/axis[2]
+        return dict(depth_m=float(-delta[2]), mouth_error_m=float(np.linalg.norm(center)),
+                    tilt_deg=float(np.rad2deg(np.arccos(np.clip(axis[2], -1, 1)))),
+                    pin_grasped=self.grasped(), carrier_grasped=self._holder_grasped())
+
+    def carrier_table_supported(self):
+        """Require a loaded carrier contact with the physical table surface."""
+        s = self.sim
+        force = np.zeros(6)
+        normal = 0.
+        for i, contact in enumerate(s.data.contact):
+            bodies = s.model.geom_bodyid[[contact.geom1, contact.geom2]]
+            names = (s.model.geom(contact.geom1).name, s.model.geom(contact.geom2).name)
+            if self._carrier in bodies and 'table_top' in names and contact.efc_address >= 0:
+                mujoco.mj_contactForce(s.model, s.data, i, force)
+                normal += max(0., force[0])
+        return bool(normal > .01)
+
+    def alignment_status(self):
+        status = self.entry_status()
+        status['clearance_m'] = -status.pop('depth_m')
+        status['carrier_table_supported'] = self.carrier_table_supported()
+        return status
+
+    def observe(self):
+        result = super().observe()
+        observation = self.env._observation(self.env._info())
+        result.update({f'insertion_{key}': value for key, value in observation.items()})
+        result.update({f'alignment_{key}': np.asarray(value) for key, value in self.alignment_status().items()})
+        if self.images:
+            camera = mujoco.MjvCamera()
+            camera.lookat[:] = self._detail_lookat
+            camera.distance, camera.azimuth, camera.elevation = .18, 180., -65.
+            option = mujoco.MjvOption()
+            option.geomgroup[3] = 0
+            option.sitegroup[:] = 0
+            self._renderer.update_scene(self.sim.data, camera=camera, scene_option=option)
+            result['image_carrier_detail'] = self._renderer.render().copy()
+        return result
+
+    def grasped(self):
+        forces = np.zeros(2)
+        pads = [self.sim.model.geom(n).id for n in ('L_finger_pad', 'R_finger_pad')]
+        wrench = np.zeros(6)
+        for i, contact in enumerate(self.sim.data.contact):
+            for obj, pad in ((contact.geom1, contact.geom2), (contact.geom2, contact.geom1)):
+                if self.sim.model.geom_bodyid[obj] == self._pin and pad in pads and contact.efc_address >= 0:
+                    mujoco.mj_contactForce(self.sim.model, self.sim.data, i, wrench)
+                    forces[pads.index(pad)] += max(0., wrench[0])
+        return bool(np.all(forces > .01))
+
+    def stop(self):
+        for arm in self.sim.arms.values():
+            arm.set_arm_ctrl(arm.q)
+
+    def close(self):
+        super().close()
+        self.env.close()
+
+
+MujocoPinAlignmentBackend = MujocoPinInsertionBackend

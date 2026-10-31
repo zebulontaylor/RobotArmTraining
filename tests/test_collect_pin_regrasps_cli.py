@@ -97,3 +97,41 @@ def test_attempt_exception_is_reported_and_propagated(tmp_path, monkeypatch):
     summary = read_json(tmp_path / 'summary.json')
     assert summary['status'] == 'interrupted_or_error'
     assert summary['successful_episodes'] == 0
+
+
+def test_alignment_task_records_distinct_contract_at_native_frequency(tmp_path, monkeypatch):
+    requests = fake_attempts(monkeypatch, [True])
+    assert cli.main(['--task', 'alignment', '--output', str(tmp_path),
+                     '--episodes', '1', '--max-attempts', '1', '--no-images']) == 0
+    config = read_json(tmp_path / 'config.json')
+    assert requests[0][-1] == 'alignment'
+    assert config['task'] == 'alignment'
+    assert config['backend_config']['hz'] == 20
+    assert config['backend'] == 'MujocoPinAlignmentBackend'
+    assert config['pose_profile'] == 'sim/actuator/pin_reset_profile.json'
+    assert len(config['action_fields']) == 14
+    assert config['action_contract']['type'] == 'normalized_increment'
+    assert config['action_contract']['right_translation_m'] == .00025
+    assert config['collection']['endpoint_clearance_m'] == .001
+    assert config['phase_names'] == ['retreat', 'carrier_drag', 'pin_relocate', 'return', 'verify']
+    assert config['alignment_mode'] == 'alignment_only'
+    assert config['backend_config']['scene_xy_m'] == .03
+    assert config['collection']['cycles'] == 3
+
+
+def test_alignment_rejects_other_control_frequencies_before_output(tmp_path):
+    output = tmp_path / 'dataset'
+    with pytest.raises(SystemExit) as error:
+        cli.main(['--task', 'alignment', '--output', str(output), '--hz', '30'])
+    assert error.value.code == 2
+    assert not output.exists()
+
+
+def test_insertion_cli_alias_normalizes_to_alignment_only(tmp_path, monkeypatch):
+    requests = fake_attempts(monkeypatch, [True])
+    assert cli.main(['--task', 'insertion', '--output', str(tmp_path),
+                     '--episodes', '1', '--max-attempts', '1']) == 0
+    assert requests[0][-1] == 'alignment'
+    config = read_json(tmp_path / 'config.json')
+    assert config['task'] == 'alignment'
+    assert config['alignment_mode'] == 'alignment_only'

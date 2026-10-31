@@ -1,4 +1,4 @@
-"""Collect randomized, physically verified pin regrasp demonstrations in MuJoCo."""
+"""Collect physically verified pin regrasp or held-pin alignment demos in MuJoCo."""
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -32,12 +32,21 @@ def write_json(path, value):
 
 
 def record_attempt(request):
-    seed, output, config, backend_config, save_failures = request
+    seed, output, config, backend_config, save_failures, *task_option = request
+    task = task_option[0] if task_option else 'regrasp'
     from sim.pin_regrasp_backend import MujocoPinBackend
     started = time.monotonic()
-    backend = MujocoPinBackend(**backend_config)
+    if task in ('alignment', 'insertion'):
+        from sim.pin_regrasp_backend import MujocoPinInsertionBackend
+        from collection.pin_insertion import InsertionCollectionConfig, collect_insertion_episode
+        backend = MujocoPinInsertionBackend(**backend_config, max_steps=config['max_steps'])
+        collector, settings = collect_insertion_episode, InsertionCollectionConfig(**config)
+    else:
+        backend = MujocoPinBackend(**backend_config)
+        collector, settings = collect_episode, CollectionConfig(**config)
     try:
-        arrays, result = collect_episode(backend, seed, CollectionConfig(**config))
+        arrays, result = collector(backend, seed, settings)
+        result['task'] = 'alignment' if task in ('alignment', 'insertion') else task
         result['elapsed_s'] = time.monotonic()-started
         if result['success'] or save_failures:
             category = 'episodes' if result['success'] else 'failures'
@@ -56,17 +65,23 @@ def record_attempt(request):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--task', choices=('regrasp', 'alignment', 'insertion'), default='regrasp')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--episodes', type=int, default=100)
     parser.add_argument('--max-attempts', type=int, default=500)
     parser.add_argument('--workers', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--hz', type=int, default=30)
+    parser.add_argument('--hz', type=int, help='Default: 30 for regrasp; alignment requires 20')
     parser.add_argument('--image-size', type=int, default=128)
     parser.add_argument('--no-images', action='store_true', help='State-only diagnostic collection')
     parser.add_argument('--save-failures', action='store_true')
-    parser.add_argument('--config', type=Path, help='JSON overrides for CollectionConfig fields')
+    parser.add_argument('--config', type=Path, help='JSON overrides for the selected task collection settings')
     args = parser.parse_args(argv)
+    if args.task == 'insertion':
+        args.task = 'alignment'
+    args.hz = args.hz if args.hz is not None else (20 if args.task == 'alignment' else 30)
+    if args.task == 'alignment' and args.hz != 20:
+        parser.error('Alignment runs at 20 Hz')
     if min(args.episodes, args.max_attempts, args.workers, args.hz, args.image_size) < 1 or args.seed < 0:
         parser.error('Counts, frequency and image size must be positive; seed must be nonnegative')
     if args.max_attempts < args.episodes:
@@ -74,7 +89,9 @@ def main(argv=None):
     if args.hz > 1000:
         parser.error('--hz cannot exceed the 1000 Hz physics timestep')
     try:
-        config = CollectionConfig(**(json.loads(args.config.read_text()) if args.config else {}))
+        from collection.pin_insertion import InsertionCollectionConfig
+        config_class = InsertionCollectionConfig if args.task == 'alignment' else CollectionConfig
+        config = config_class(**(json.loads(args.config.read_text()) if args.config else {}))
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
     if args.output.exists() and not args.output.is_dir():
@@ -83,15 +100,27 @@ def main(argv=None):
         parser.error('Output directory must be empty; choose a new directory')
     args.output.mkdir(parents=True, exist_ok=True)
     backend_config = dict(hz=args.hz, image_size=args.image_size, images=not args.no_images)
+    from collection.pin_insertion import PHASE_NAMES as INSERTION_PHASES
+    insertion = args.task == 'alignment'
+    if insertion:
+        backend_config['scene_xy_m'] = config.scene_xy_m
     write_json(args.output / 'config.json', dict(
-        schema_version=2, backend='MujocoPinBackend', backend_config=backend_config,
-        setup_profile='photo_20261027', pose_profile='sim/actuator/pin_regrasp_profile.json',
+        schema_version=3 if insertion else 2, task=args.task,
+        backend='MujocoPinAlignmentBackend' if insertion else 'MujocoPinBackend', backend_config=backend_config,
+        setup_profile='photo_20261027', pose_profile='sim/actuator/pin_reset_profile.json' if insertion else 'sim/actuator/pin_regrasp_profile.json',
         collection=asdict(config), seed=args.seed, requested_episodes=args.episodes,
         max_attempts=args.max_attempts, workers=args.workers,
-        action_fields=['x_m', 'y_m', 'z_m'] + [f'rotation_{r}{c}' for r in range(3) for c in range(3)] + ['finger_open_m'],
-        action_frame='MuJoCo world', phase_names=PHASE_NAMES,
+        action_fields=([f'{side}_{field}' for side in ('left', 'right')
+                        for field in ('dx', 'dy', 'dz', 'rx', 'ry', 'rz', 'grip_delta')] if insertion else ['x_m', 'y_m', 'z_m'] + [f'rotation_{r}{c}' for r in range(3) for c in range(3)] + ['finger_open_m']),
+        action_frame='MuJoCo world', phase_names=INSERTION_PHASES if insertion else PHASE_NAMES,
+        action_contract=(dict(type='normalized_increment', clip=[-1, 1],
+                             left_translation_m=.001, right_translation_m=.00025,
+                             left_rotation_deg=.5, right_rotation_deg=.1, gripper_fraction=.05)
+                         if insertion else dict(type='absolute_tool_pose')),
         observation_alignment='obs[i], actions[i], obs[i+1]',
-        training_selection='successful episode AND training_mask; return and close phases only'))
+        alignment_mode='alignment_only' if insertion else None,
+        training_selection=('successful run AND training_mask; return phases only' if insertion
+                            else 'successful episode AND training_mask; return and close phases only')))
     successes, attempts, transitions = 0, 0, 0
     started = time.monotonic()
     status = 'running'
@@ -112,7 +141,7 @@ def main(argv=None):
                 # Never launch more successes than requested, and keep only one
                 # episode per worker in memory rather than accumulating a dataset.
                 count = min(args.workers, args.episodes-successes, args.max_attempts-attempts)
-                requests = [(args.seed+i, str(args.output), asdict(config), backend_config, args.save_failures)
+                requests = [(args.seed+i, str(args.output), asdict(config), backend_config, args.save_failures, args.task)
                             for i in range(attempts, attempts+count)]
                 results = pool.map(record_attempt, requests) if pool else map(record_attempt, requests)
                 for result in results:
